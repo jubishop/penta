@@ -1,6 +1,6 @@
 # Penta
 
-Multi-agent group chat TUI — Claude and Codex in one terminal conversation.
+Multi-agent group chat TUI — Claude, Codex, and Gemini in one terminal conversation.
 
 ## Stack
 
@@ -22,6 +22,8 @@ Multi-agent group chat TUI — Claude and Codex in one terminal conversation.
 - `asyncio.Event` for completion signaling (no polling)
 - Textual `Message` objects for decoupling services from UI
 - Type hints everywhere
+- All agent services use spawn-per-turn CLI execution with JSON streaming — no long-lived server processes
+- External MCP messages are always labeled `(external)` when the sender name matches a built-in agent or reserved name
 
 ## Running
 

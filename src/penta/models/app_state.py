@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
@@ -49,7 +48,6 @@ class AppState:
         self.on_status_changed: Callable[[UUID, object], None] | None = None
         self.on_external_message: Callable[[str, str], None] | None = None
         self.on_external_participant_joined: Callable[[str], None] | None = None
-        self.on_shell_output: Callable[[], None] | None = None
 
     def setup_permission_server(self, loop: asyncio.AbstractEventLoop) -> None:
         self.permission_server = PermissionServer(loop)
@@ -114,25 +112,18 @@ class AppState:
             mode=RouteMode.ALL_IF_NO_MENTIONS,
         )
 
-    def run_shell_command(self, command: str) -> None:
-        self.conversation.append(
-            Message(sender=MessageSender.user(), text=f"$ {command}")
-        )
-        self.db.append_message("User", f"$ {command}")
-        asyncio.create_task(self._execute_shell(command))
+    _RESERVED_NAMES = {"user", "shell", "system"}
 
     def receive_external_message(self, sender_name: str, text: str) -> None:
-        agent = self.agent_by_name(sender_name)
-        if agent:
-            msg_sender = MessageSender.agent(agent.id)
-        elif sender_name == "User":
-            msg_sender = MessageSender.user()
-        else:
-            msg_sender = MessageSender.external(sender_name)
+        # External writers may not impersonate built-in agents or reserved
+        # names — always treat them as external senders.
+        if self.agent_by_name(sender_name) or sender_name.lower() in self._RESERVED_NAMES:
+            sender_name = f"{sender_name} (external)"
+
+        msg_sender = MessageSender.external(sender_name)
         self.conversation.append(Message(sender=msg_sender, text=text))
 
-        # Track external participants (not built-in agents, not "User")
-        if not agent and sender_name != "User" and sender_name not in self.external_participants:
+        if sender_name not in self.external_participants:
             self.external_participants.add(sender_name)
             if self.on_external_participant_joined:
                 self.on_external_participant_joined(sender_name)
@@ -140,12 +131,10 @@ class AppState:
         if self.on_external_message:
             self.on_external_message(sender_name, text)
 
-        tag_label = sender_name
-        tagged = TaggedMessage(sender_label=tag_label, text=text)
+        tagged = TaggedMessage(sender_label=sender_name, text=text)
         mentioned = extract_mentions(text, self.agents)
-        excluding = agent.id if agent else None
         self._route(
-            tagged, excluding=excluding, mentioned=mentioned,
+            tagged, excluding=None, mentioned=mentioned,
             mode=RouteMode.MENTIONED_ONLY,
         )
 
@@ -186,14 +175,18 @@ class AppState:
             )
 
         # Hydrate coordinator catch-up history so context works even if
-        # session resume fails after a restart.
+        # session resume fails after a restart.  last_prompted_index stays
+        # at 0 so the first post-restart prompt replays all prior history
+        # as catch-up context.  For agents that successfully resume their
+        # session natively (Claude --resume, Codex exec resume) this is
+        # redundant but harmless.
         history = [
             TaggedMessage(sender_label=sender, text=text)
             for _, sender, text, _ in rows
         ]
         for coord in self.coordinators.values():
             coord.full_history = list(history)
-            coord.last_prompted_index = len(history)
+            coord.last_prompted_index = 0
 
     def start_external_polling(
         self, relay: Callable[[str, str], None],
@@ -265,51 +258,6 @@ class AppState:
             tagged, excluding=agent_id, mentioned=mentioned,
             mode=RouteMode.MENTIONED_ONLY, hops=hops + 1,
         )
-
-    _SHELL_OUTPUT_MAX = 100_000  # bytes
-
-    async def _execute_shell(self, command: str) -> None:
-        try:
-            shell = os.environ.get("SHELL", "/bin/sh")
-            proc = await asyncio.create_subprocess_exec(
-                shell, "-lc", command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=self.directory,
-            )
-            data = await proc.stdout.read(self._SHELL_OUTPUT_MAX + 1)
-            truncated = len(data) > self._SHELL_OUTPUT_MAX
-            if truncated:
-                data = data[:self._SHELL_OUTPUT_MAX]
-            await proc.wait()
-            output = data.decode("utf-8", errors="replace").strip()
-            exit_code = proc.returncode
-
-            if truncated:
-                output += f"\n... (truncated at {self._SHELL_OUTPUT_MAX // 1000}KB)"
-
-            if output:
-                result_text = f"```\n{output}\n```"
-            elif exit_code != 0:
-                result_text = f"[Shell exited with status {exit_code}]"
-            else:
-                result_text = None
-        except Exception as e:
-            result_text = f"[Shell error: {e}]"
-
-        if result_text:
-            self.conversation.append(
-                Message(sender=MessageSender.external("Shell"), text=result_text)
-            )
-            self.db.append_message("Shell", result_text)
-
-            # Inject shell output as context for all agents
-            tagged = TaggedMessage(sender_label="Shell", text=f"$ {command}\n{result_text}")
-            for coord in self.coordinators.values():
-                coord.inject_context(tagged)
-
-        if self.on_shell_output:
-            self.on_shell_output()
 
     # -- Permission helpers --
 

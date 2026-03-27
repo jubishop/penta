@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.reactive import reactive
@@ -7,6 +9,8 @@ from textual.widgets import Markdown, Static
 
 from penta.models import Message
 from penta.models.agent_type import AgentType
+
+log = logging.getLogger(__name__)
 
 
 class ChatMessage(Vertical):
@@ -49,7 +53,7 @@ class ChatMessage(Vertical):
     }
     """
 
-    body_text: reactive[str] = reactive("", layout=True)
+    body_text: reactive[str] = reactive("")
     is_streaming: reactive[bool] = reactive(False)
 
     def __init__(
@@ -85,7 +89,7 @@ class ChatMessage(Vertical):
             display = value or ("..." if self.is_streaming else "")
             md.update(display)
         except Exception:
-            pass
+            log.debug("watch_body_text: widget not ready", exc_info=True)
 
     def watch_is_streaming(self, value: bool) -> None:
         if not value and not self.body_text:
@@ -93,4 +97,4 @@ class ChatMessage(Vertical):
                 md = self.query_one(".message-body", Markdown)
                 md.update(self.body_text or "")
             except Exception:
-                pass
+                log.debug("watch_is_streaming: widget not ready", exc_info=True)

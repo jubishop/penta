@@ -9,7 +9,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer, Static
 
-from penta.input_parser import ParsedChat, ParsedShell, parse
+from penta.input_parser import ParsedChat, parse
 from penta.models import AgentStatus, AgentType, Message, PermissionRequest, AgentConfig
 from penta.models.app_state import AppState
 from penta.widgets.chat_message import ChatMessage
@@ -60,7 +60,6 @@ class PentaApp(App):
         state.on_status_changed = self._on_status_changed
         state.on_external_message = self._on_external_message
         state.on_external_participant_joined = self._on_external_participant_joined
-        state.on_shell_output = self._on_shell_output
 
         # Seed agents
         claude = state.add_agent("claude", AgentType.CLAUDE)
@@ -106,12 +105,8 @@ class PentaApp(App):
             return
         parsed = parse(event.text, self._state.agents)
 
-        if isinstance(parsed, ParsedShell):
-            self._state.run_shell_command(parsed.command)
-            self._render_new_messages()
-        elif isinstance(parsed, ParsedChat):
-            self._state.send_user_message(parsed.text)
-            self._render_new_messages()
+        self._state.send_user_message(parsed.text)
+        self._render_new_messages()
 
     # -- Permission handling --
 
@@ -140,11 +135,6 @@ class PentaApp(App):
 
     def _on_external_message(self, sender: str, text: str) -> None:
         self._render_new_messages()
-
-    def _on_shell_output(self) -> None:
-        self._render_new_messages()
-        chat_room = self.query_one("#chat-room", ChatRoom)
-        chat_room.scroll_end(animate=False)
 
     def _on_external_participant_joined(self, name: str) -> None:
         status_bar = self.query_one("#status-bar", Horizontal)
