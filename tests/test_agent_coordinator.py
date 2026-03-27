@@ -43,7 +43,7 @@ class HangingService(AgentService):
 
 @pytest.fixture
 def db(tmp_path: Path) -> PentaDB:
-    return PentaDB(tmp_path / "test-project")
+    return PentaDB(tmp_path / "test-project", storage_root=tmp_path)
 
 
 @pytest.fixture

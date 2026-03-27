@@ -357,35 +357,47 @@ class TestCodexSessionRestore:
 class TestLateThreadResponse:
     """Late thread/start responses after timeout must not clobber state."""
 
-    def test_late_response_does_not_overwrite_thread_id(self):
-        """If _thread_id is already set (from a successful later attempt),
-        a late response from a timed-out thread/start must be ignored."""
+    def test_late_response_ignored_after_timeout(self):
+        """After _create_thread times out (future=None, thread_id=None),
+        a late success response must NOT be adopted."""
         service = CodexService(executable="/bin/false")
         service._event_queue = asyncio.Queue()
-        # Simulate: thread was already created successfully
-        service._thread_id = "good-thread"
-        # Future is None (timed out and cleaned up)
+        # Post-timeout state: future cleaned up, no thread
+        service._thread_id = None
         service._thread_create_future = None
 
-        # Late response arrives for the old timed-out request
         service._handle_server_response({
             "id": 1,
             "result": {"thread": {"id": "late-thread"}},
         })
 
-        # Must NOT overwrite the good thread
-        assert service._thread_id == "good-thread"
+        assert service._thread_id is None
 
-    def test_late_notification_does_not_overwrite_thread_id(self):
+    def test_late_notification_ignored_after_timeout(self):
         """Same as above but via thread/started notification path."""
         service = CodexService(executable="/bin/false")
         service._event_queue = asyncio.Queue()
-        service._thread_id = "good-thread"
+        service._thread_id = None
         service._thread_create_future = None
 
         service._handle_notification({
             "method": "thread/started",
             "params": {"thread": {"id": "late-thread"}},
+        })
+
+        assert service._thread_id is None
+
+    def test_late_response_does_not_overwrite_existing_thread(self):
+        """If _thread_id is already set (from a later successful attempt),
+        a late response must also be ignored."""
+        service = CodexService(executable="/bin/false")
+        service._event_queue = asyncio.Queue()
+        service._thread_id = "good-thread"
+        service._thread_create_future = None
+
+        service._handle_server_response({
+            "id": 1,
+            "result": {"thread": {"id": "late-thread"}},
         })
 
         assert service._thread_id == "good-thread"

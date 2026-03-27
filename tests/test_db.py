@@ -8,7 +8,7 @@ from penta.services.db import PentaDB
 
 @pytest.fixture
 def db(tmp_path: Path) -> PentaDB:
-    return PentaDB(tmp_path / "test-project")
+    return PentaDB(tmp_path / "test-project", storage_root=tmp_path)
 
 
 class TestAppendAndQuery:
@@ -129,15 +129,15 @@ class TestExternalChanges:
 
 class TestDbPath:
     def test_path_is_deterministic(self, tmp_path: Path):
-        db1 = PentaDB(tmp_path / "myproject")
-        db2 = PentaDB(tmp_path / "myproject")
+        db1 = PentaDB(tmp_path / "myproject", storage_root=tmp_path)
+        db2 = PentaDB(tmp_path / "myproject", storage_root=tmp_path)
         assert db1._db_path == db2._db_path
         db1.close()
         db2.close()
 
     def test_different_dirs_get_different_paths(self, tmp_path: Path):
-        db1 = PentaDB(tmp_path / "project-a")
-        db2 = PentaDB(tmp_path / "project-b")
+        db1 = PentaDB(tmp_path / "project-a", storage_root=tmp_path)
+        db2 = PentaDB(tmp_path / "project-b", storage_root=tmp_path)
         assert db1._db_path != db2._db_path
         db1.close()
         db2.close()

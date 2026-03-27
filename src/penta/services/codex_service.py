@@ -350,9 +350,6 @@ class CodexService(AgentService):
                     self._thread_id = thread_id
                     self._thread_create_future.set_result(thread_id)
                     log.info("[Codex] Thread started: %s", thread_id)
-                elif not self._thread_id:
-                    self._thread_id = thread_id
-                    log.info("[Codex] Thread started: %s", thread_id)
                 else:
                     log.warning("[Codex] Ignoring late thread notification: %s", thread_id)
                     return
