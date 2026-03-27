@@ -219,6 +219,8 @@ class AppState:
         for agent in self.agents:
             if agent.id == excluding:
                 continue
+            if agent.status == AgentStatus.DISCONNECTED:
+                continue
             coord = self.coordinators.get(agent.id)
             if not coord:
                 continue
