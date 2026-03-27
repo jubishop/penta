@@ -45,10 +45,32 @@ class CodexService(AgentService):
             # Server is still running — the saved thread is valid.
             self._thread_id = session_id
 
+        if not self._thread_id and session_id and fresh_server:
+            # Server just (re)started but we have a saved thread ID.
+            # Threads are persisted to disk, so try to resume it.
+            self._event_queue = asyncio.Queue()
+            try:
+                self._thread_id = await self._resume_or_start_thread(
+                    session_id, working_dir,
+                )
+            except asyncio.TimeoutError:
+                self._event_queue = None
+                yield StreamEvent(
+                    type=StreamEventType.ERROR,
+                    error="Timed out waiting for Codex thread resume",
+                )
+                yield StreamEvent(type=StreamEventType.DONE)
+                return
+            except Exception as e:
+                self._event_queue = None
+                yield StreamEvent(
+                    type=StreamEventType.ERROR, error=str(e),
+                )
+                yield StreamEvent(type=StreamEventType.DONE)
+                return
+
         if not self._thread_id:
-            # Need a new thread: either the server just started (saved
-            # session_id is stale) or there was no prior session at all.
-            # Set up the event queue first so SESSION_STARTED is captured.
+            # No prior session at all — create a fresh thread.
             self._event_queue = asyncio.Queue()
             try:
                 self._thread_id = await self._create_thread(working_dir)
@@ -122,7 +144,8 @@ class CodexService(AgentService):
 
     async def _ensure_server(self, working_dir: Path) -> bool:
         """Start the app-server if not running.  Returns True when a fresh
-        server was launched (all prior thread IDs are invalid)."""
+        server was launched (in-memory thread subscriptions are gone, but
+        persisted threads can still be resumed via thread/resume)."""
         if self._process and self._process.returncode is None:
             return False
 
@@ -167,6 +190,34 @@ class CodexService(AgentService):
         self._thread_create_future = loop.create_future()
         try:
             await self._start_thread(working_dir)
+            return await asyncio.wait_for(
+                self._thread_create_future, timeout=10,
+            )
+        finally:
+            self._thread_create_future = None
+
+    async def _resume_or_start_thread(
+        self, session_id: str, working_dir: Path,
+    ) -> str:
+        """Try to resume a persisted thread; fall back to a new one."""
+        try:
+            return await self._resume_thread(session_id, working_dir)
+        except Exception as exc:
+            log.info(
+                "[Codex] thread/resume failed (%s), creating new thread", exc,
+            )
+            return await self._create_thread(working_dir)
+
+    async def _resume_thread(self, thread_id: str, working_dir: Path) -> str:
+        """Resume a persisted thread.  Returns the thread ID.
+        Raises on RPC error or timeout."""
+        loop = asyncio.get_running_loop()
+        self._thread_create_future = loop.create_future()
+        try:
+            await self._send_request("thread/resume", {
+                "threadId": thread_id,
+                "cwd": str(working_dir),
+            })
             return await asyncio.wait_for(
                 self._thread_create_future, timeout=10,
             )

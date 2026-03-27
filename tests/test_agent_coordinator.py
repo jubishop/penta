@@ -68,6 +68,54 @@ def coordinator(db: PentaDB) -> AgentCoordinator:
 # -- Tests --------------------------------------------------------------------
 
 
+class TestCatchUpHistoryAfterRestart:
+    """After load_chat_history(), the first prompt should replay all prior
+    messages as catch-up context (last_prompted_index=0)."""
+
+    @pytest.mark.asyncio
+    async def test_first_prompt_includes_full_history(self, coordinator: AgentCoordinator):
+        """Simulates a restart: hydrate history, then build a prompt.
+        The prompt should contain catch-up lines from all prior messages."""
+        # Simulate hydrated history (what load_chat_history does)
+        coordinator.full_history = [
+            TaggedMessage(sender_label="User", text="first message"),
+            TaggedMessage(sender_label="other", text="reply from other"),
+        ]
+        coordinator.last_prompted_index = 0  # the fix
+
+        # Now a new message arrives post-restart
+        current = TaggedMessage(sender_label="User", text="new question")
+        coordinator.full_history.append(current)
+
+        prompt = coordinator._build_prompt(current)
+
+        assert "[Messages since your last response:]" in prompt
+        assert "first message" in prompt
+        assert "reply from other" in prompt
+        assert "new question" in prompt
+
+    @pytest.mark.asyncio
+    async def test_second_prompt_does_not_repeat_catchup(self, coordinator: AgentCoordinator):
+        """After the first post-restart prompt, subsequent prompts should
+        NOT re-include already-seen history."""
+        coordinator.full_history = [
+            TaggedMessage(sender_label="User", text="old message"),
+        ]
+        coordinator.last_prompted_index = 0
+
+        first = TaggedMessage(sender_label="User", text="first new")
+        coordinator.full_history.append(first)
+        coordinator._build_prompt(first)  # advances last_prompted_index
+
+        second = TaggedMessage(sender_label="User", text="second new")
+        coordinator.full_history.append(second)
+        prompt = coordinator._build_prompt(second)
+
+        assert "old message" not in prompt
+        assert "first new" not in prompt
+        assert "second new" in prompt
+
+
 class TestCancelledStreamIsNotTreatedAsSuccess:
     """Regression: cancelling a stream must NOT persist, route, or callback."""
 

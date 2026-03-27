@@ -219,13 +219,11 @@ class TestCodexSessionRestore:
         assert any(e.type == StreamEventType.TEXT_DELTA and e.text == "ok" for e in events)
 
     @pytest.mark.asyncio
-    async def test_session_id_skipped_on_fresh_server(self):
-        """When the server was just started (fresh process), the saved
-        session_id is stale — send() must skip it and create a new thread.
-        The new thread's SESSION_STARTED must be emitted for persistence."""
+    async def test_fresh_server_resumes_saved_thread(self):
+        """When the server was just started but we have a saved session_id,
+        send() should try thread/resume first to restore full context."""
         service = CodexService(executable="/bin/false")
-        # Do NOT set _process — _ensure_server will "start" a fresh server.
-        # We mock it to just set the flag and return True.
+
         async def mock_ensure_server(working_dir):
             service._process = MagicMock()
             service._process.returncode = None
@@ -234,7 +232,106 @@ class TestCodexSessionRestore:
 
         service._ensure_server = mock_ensure_server
 
+        rpc_methods: list[str] = []
+
         async def mock_send_request(method, params):
+            rpc_methods.append(method)
+            if method == "thread/resume":
+                assert params["threadId"] == "saved-thread-123"
+                service._handle_server_response({
+                    "id": 1,
+                    "result": {"thread": {"id": "saved-thread-123"}},
+                })
+            elif method == "turn/start":
+                service._event_queue.put_nowait(
+                    StreamEvent(type=StreamEventType.TEXT_DELTA, text="resumed")
+                )
+                service._event_queue.put_nowait(
+                    StreamEvent(type=StreamEventType.DONE)
+                )
+
+        service._send_request = mock_send_request
+
+        events = []
+        async for event in service.send("hello", "saved-thread-123", Path("/tmp")):
+            events.append(event)
+
+        # Must have called thread/resume, NOT thread/start
+        assert "thread/resume" in rpc_methods
+        assert "thread/start" not in rpc_methods
+        assert service._thread_id == "saved-thread-123"
+        assert any(e.type == StreamEventType.TEXT_DELTA and e.text == "resumed" for e in events)
+        # SESSION_STARTED emitted so coordinator persists the (possibly same) ID
+        session_events = [e for e in events if e.type == StreamEventType.SESSION_STARTED]
+        assert len(session_events) == 1
+        assert session_events[0].session_id == "saved-thread-123"
+
+    @pytest.mark.asyncio
+    async def test_fresh_server_falls_back_to_start_on_resume_failure(self):
+        """If thread/resume fails (thread not on disk), send() should
+        fall back to thread/start and create a new thread."""
+        service = CodexService(executable="/bin/false")
+
+        async def mock_ensure_server(working_dir):
+            service._process = MagicMock()
+            service._process.returncode = None
+            service._thread_id = None
+            return True
+
+        service._ensure_server = mock_ensure_server
+
+        rpc_methods: list[str] = []
+
+        async def mock_send_request(method, params):
+            rpc_methods.append(method)
+            if method == "thread/resume":
+                service._handle_server_response({
+                    "id": 1,
+                    "error": {"message": "thread not found"},
+                })
+            elif method == "thread/start":
+                service._handle_server_response({
+                    "id": 2,
+                    "result": {"thread": {"id": "fresh-thread"}},
+                })
+            elif method == "turn/start":
+                service._event_queue.put_nowait(
+                    StreamEvent(type=StreamEventType.TEXT_DELTA, text="new session")
+                )
+                service._event_queue.put_nowait(
+                    StreamEvent(type=StreamEventType.DONE)
+                )
+
+        service._send_request = mock_send_request
+
+        events = []
+        async for event in service.send("hello", "gone-thread", Path("/tmp")):
+            events.append(event)
+
+        # Tried resume first, then fell back to start
+        assert rpc_methods[0] == "thread/resume"
+        assert "thread/start" in rpc_methods
+        assert service._thread_id == "fresh-thread"
+        assert any(e.type == StreamEventType.TEXT_DELTA and e.text == "new session" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_no_session_id_on_fresh_server_creates_new_thread(self):
+        """When the server just started and there's no saved session_id,
+        send() should create a fresh thread directly."""
+        service = CodexService(executable="/bin/false")
+
+        async def mock_ensure_server(working_dir):
+            service._process = MagicMock()
+            service._process.returncode = None
+            service._thread_id = None
+            return True
+
+        service._ensure_server = mock_ensure_server
+
+        rpc_methods: list[str] = []
+
+        async def mock_send_request(method, params):
+            rpc_methods.append(method)
             if method == "thread/start":
                 service._handle_server_response({
                     "id": 1,
@@ -251,16 +348,13 @@ class TestCodexSessionRestore:
         service._send_request = mock_send_request
 
         events = []
-        async for event in service.send("hello", "stale-session", Path("/tmp")):
+        async for event in service.send("hello", None, Path("/tmp")):
             events.append(event)
 
-        # Must have created a fresh thread, NOT reused the stale session
+        # No resume attempt — straight to thread/start
+        assert "thread/resume" not in rpc_methods
+        assert "thread/start" in rpc_methods
         assert service._thread_id == "fresh-thread"
-        assert any(e.type == StreamEventType.TEXT_DELTA and e.text == "new session" for e in events)
-        # SESSION_STARTED emitted so the coordinator persists the new ID
-        session_events = [e for e in events if e.type == StreamEventType.SESSION_STARTED]
-        assert len(session_events) == 1
-        assert session_events[0].session_id == "fresh-thread"
 
     @pytest.mark.asyncio
     async def test_thread_start_rpc_error_surfaces_exact_message(self):

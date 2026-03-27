@@ -186,14 +186,18 @@ class AppState:
             )
 
         # Hydrate coordinator catch-up history so context works even if
-        # session resume fails after a restart.
+        # session resume fails after a restart.  last_prompted_index stays
+        # at 0 so the first post-restart prompt replays all prior history
+        # as catch-up context.  For agents that successfully resume their
+        # session natively (Claude --resume, Codex thread/resume) this is
+        # redundant but harmless.
         history = [
             TaggedMessage(sender_label=sender, text=text)
             for _, sender, text, _ in rows
         ]
         for coord in self.coordinators.values():
             coord.full_history = list(history)
-            coord.last_prompted_index = len(history)
+            coord.last_prompted_index = 0
 
     def start_external_polling(
         self, relay: Callable[[str, str], None],
