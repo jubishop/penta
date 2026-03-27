@@ -21,6 +21,7 @@ class CodexService(AgentService):
         self._executable = executable or AgentType.CODEX.find_executable()
         self._process: asyncio.subprocess.Process | None = None
         self._thread_id: str | None = None
+        self._turn_id: str | None = None
         self._next_request_id = 1
         self._initialized = asyncio.Event()
         self._thread_create_future: asyncio.Future[str] | None = None
@@ -119,6 +120,21 @@ class CodexService(AgentService):
         await self._write_stdin(response)
 
     async def cancel(self) -> None:
+        # Tell the server to stop the active turn so it doesn't keep
+        # streaming.  Without this, late notifications from the old turn
+        # would bleed into the next one.
+        thread_id = self._thread_id
+        turn_id = self._turn_id
+        if thread_id and turn_id:
+            self._turn_id = None
+            try:
+                await self._send_request("turn/interrupt", {
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                })
+            except Exception:
+                log.debug("[Codex] turn/interrupt failed (server may be gone)")
+
         if self._event_queue:
             await self._event_queue.put(StreamEvent(type=StreamEventType.DONE))
             self._event_queue = None
@@ -137,6 +153,7 @@ class CodexService(AgentService):
             self._stderr_task.cancel()
 
         self._thread_id = None
+        self._turn_id = None
         self._thread_create_future = None
         self._initialized.clear()
 
@@ -152,6 +169,7 @@ class CodexService(AgentService):
         # Reset state for fresh server
         self._initialized.clear()
         self._thread_id = None
+        self._turn_id = None
         self._thread_create_future = None
         self._next_request_id = 1
 
@@ -387,6 +405,12 @@ class CodexService(AgentService):
                 self.respond_to_permission(request_id, True)
             )
 
+    @staticmethod
+    def _extract_turn_id(params: dict) -> str | None:
+        """Pull turn ID from a notification payload."""
+        turn_obj = params.get("turn", {})
+        return turn_obj.get("id") if isinstance(turn_obj, dict) else None
+
     def _handle_notification(self, data: dict) -> None:
         method = data.get("method", "")
         params = data.get("params", {})
@@ -397,8 +421,16 @@ class CodexService(AgentService):
             if thread_id:
                 self._accept_thread_id(thread_id, "started")
 
+        elif method == "turn/started":
+            turn_id = self._extract_turn_id(params)
+            if turn_id:
+                self._turn_id = turn_id
+                log.info("[Codex] Turn started: %s", turn_id)
+
         elif method == "item/agentMessage/delta":
-            # Streaming text delta
+            # Streaming text delta — drop if from an interrupted turn
+            if not self._turn_id:
+                return
             item = params.get("item", {})
             delta = item.get("delta", "")
             if delta and queue:
@@ -407,6 +439,8 @@ class CodexService(AgentService):
                 ))
 
         elif method == "item/completed":
+            if not self._turn_id:
+                return
             item = params.get("item", {})
             item_type = item.get("type", "")
             # agentMessage (Codex 0.116+) or agent_message (older)
@@ -418,6 +452,8 @@ class CodexService(AgentService):
                     ))
 
         elif method == "item/started":
+            if not self._turn_id:
+                return
             item = params.get("item", {})
             item_type = item.get("type", "")
             if item_type in ("tool_call", "toolCall"):
@@ -431,14 +467,24 @@ class CodexService(AgentService):
                     ))
 
         elif method == "turn/completed":
-            log.info("[Codex] Turn completed")
+            turn_id = self._extract_turn_id(params)
+            if turn_id and turn_id != self._turn_id:
+                log.info("[Codex] Ignoring completion for old turn %s", turn_id)
+                return
+            log.info("[Codex] Turn completed: %s", turn_id)
+            self._turn_id = None
             if queue:
                 queue.put_nowait(StreamEvent(type=StreamEventType.DONE))
             self._event_queue = None
 
         elif method == "turn/failed":
+            turn_id = self._extract_turn_id(params)
+            if turn_id and turn_id != self._turn_id:
+                log.info("[Codex] Ignoring failure for old turn %s", turn_id)
+                return
             error = params.get("error", "Turn failed")
             log.error("[Codex] Turn failed: %s", error)
+            self._turn_id = None
             if queue:
                 queue.put_nowait(
                     StreamEvent(type=StreamEventType.ERROR, error=error)

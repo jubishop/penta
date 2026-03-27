@@ -142,6 +142,7 @@ class TestCodexToolVisibility:
     def _make_service(self) -> CodexService:
         service = CodexService(executable="/bin/false")
         service._event_queue = asyncio.Queue()
+        service._turn_id = "active-turn"  # simulate active turn
         return service
 
     def test_tool_started_notification_yields_event(self):
@@ -495,6 +496,127 @@ class TestLateThreadResponse:
         })
 
         assert service._thread_id == "good-thread"
+
+
+class TestCodexTurnCancellation:
+    """Verify that cancel() sends turn/interrupt and late events are dropped."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_sends_turn_interrupt(self):
+        """cancel() should send turn/interrupt to the server."""
+        service = CodexService(executable="/bin/false")
+        service._event_queue = asyncio.Queue()
+        service._thread_id = "thr_1"
+        service._turn_id = "turn_1"
+
+        sent_requests: list[tuple[str, dict]] = []
+
+        async def capture_request(method, params):
+            sent_requests.append((method, params))
+
+        service._send_request = capture_request
+
+        await service.cancel()
+
+        assert len(sent_requests) == 1
+        method, params = sent_requests[0]
+        assert method == "turn/interrupt"
+        assert params["threadId"] == "thr_1"
+        assert params["turnId"] == "turn_1"
+        # turn_id should be cleared
+        assert service._turn_id is None
+
+    @pytest.mark.asyncio
+    async def test_cancel_without_active_turn_skips_interrupt(self):
+        """cancel() with no active turn should not send turn/interrupt."""
+        service = CodexService(executable="/bin/false")
+        service._event_queue = asyncio.Queue()
+        service._thread_id = "thr_1"
+        service._turn_id = None
+
+        sent_requests: list[tuple[str, dict]] = []
+
+        async def capture_request(method, params):
+            sent_requests.append((method, params))
+
+        service._send_request = capture_request
+
+        await service.cancel()
+
+        assert sent_requests == []
+
+    def test_late_delta_from_interrupted_turn_dropped(self):
+        """After cancel clears _turn_id, late deltas should be dropped."""
+        service = CodexService(executable="/bin/false")
+        service._event_queue = asyncio.Queue()
+        service._turn_id = None  # simulates post-cancel state
+
+        service._handle_notification({
+            "method": "item/agentMessage/delta",
+            "params": {"item": {"delta": "late text"}},
+        })
+
+        assert service._event_queue.empty()
+
+    def test_late_item_completed_from_interrupted_turn_dropped(self):
+        """After cancel, late item/completed should be dropped."""
+        service = CodexService(executable="/bin/false")
+        service._event_queue = asyncio.Queue()
+        service._turn_id = None
+
+        service._handle_notification({
+            "method": "item/completed",
+            "params": {"item": {"type": "agentMessage", "text": "stale"}},
+        })
+
+        assert service._event_queue.empty()
+
+    def test_late_tool_started_from_interrupted_turn_dropped(self):
+        """After cancel, late item/started (tool) should be dropped."""
+        service = CodexService(executable="/bin/false")
+        service._event_queue = asyncio.Queue()
+        service._turn_id = None
+
+        service._handle_notification({
+            "method": "item/started",
+            "params": {"item": {"type": "tool_call", "name": "shell", "id": "t1"}},
+        })
+
+        assert service._event_queue.empty()
+
+    def test_turn_completed_for_old_turn_ignored(self):
+        """turn/completed for a different turn_id should be ignored."""
+        service = CodexService(executable="/bin/false")
+        service._event_queue = asyncio.Queue()
+        service._turn_id = "turn_current"
+
+        service._handle_notification({
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_old", "status": "completed", "items": []},
+            },
+        })
+
+        # Queue should be empty — the completion was for an old turn
+        assert service._event_queue.empty()
+        # Current turn should still be active
+        assert service._turn_id == "turn_current"
+
+    def test_turn_started_captures_turn_id(self):
+        """turn/started notification should set _turn_id."""
+        service = CodexService(executable="/bin/false")
+        service._event_queue = asyncio.Queue()
+
+        service._handle_notification({
+            "method": "turn/started",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_new", "status": "inProgress", "items": []},
+            },
+        })
+
+        assert service._turn_id == "turn_new"
 
 
 class TestCodexApprovalPolicy:
