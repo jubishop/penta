@@ -290,15 +290,12 @@ class CodexService(AgentService):
         thread_id = thread_obj.get("id") if isinstance(thread_obj, dict) else None
         thread_id = thread_id or result.get("threadId")
         if thread_id:
-            # Only accept the thread if someone is waiting for it.
-            # A late response after timeout must not clobber _thread_id.
+            # Only accept when a future is actively waiting.  Thread
+            # creation is always request-scoped via _create_thread(),
+            # so a response without a pending future is late/stale.
             if self._thread_create_future and not self._thread_create_future.done():
                 self._thread_id = thread_id
                 self._thread_create_future.set_result(thread_id)
-                log.info("[Codex] Thread created: %s", thread_id)
-            elif not self._thread_id:
-                # No future but no thread yet — first-time setup
-                self._thread_id = thread_id
                 log.info("[Codex] Thread created: %s", thread_id)
             else:
                 log.warning("[Codex] Ignoring late thread response: %s", thread_id)
