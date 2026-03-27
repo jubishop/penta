@@ -35,6 +35,8 @@ class PentaApp(App):
         self._state: AppState | None = None
         self._message_widgets: dict[UUID, ChatMessage] = {}
         self._status_indicators: dict[UUID, StatusIndicator] = {}
+        self._streaming_messages: dict[UUID, Message] = {}  # agent_id -> Message
+        self._last_rendered_index: int = 0
         self._poll_task: asyncio.Task | None = None
 
     def compose(self) -> ComposeResult:
@@ -58,6 +60,7 @@ class PentaApp(App):
         state.on_status_changed = self._on_status_changed
         state.on_external_message = self._on_external_message
         state.on_external_participant_joined = self._on_external_participant_joined
+        state.on_shell_output = self._on_shell_output
 
         # Seed agents
         claude = state.add_agent("claude", AgentType.CLAUDE)
@@ -138,6 +141,11 @@ class PentaApp(App):
     def _on_external_message(self, sender: str, text: str) -> None:
         self._render_new_messages()
 
+    def _on_shell_output(self) -> None:
+        self._render_new_messages()
+        chat_room = self.query_one("#chat-room", ChatRoom)
+        chat_room.scroll_end(animate=False)
+
     def _on_external_participant_joined(self, name: str) -> None:
         status_bar = self.query_one("#status-bar", Horizontal)
         status_bar.mount(ExternalIndicator(name))
@@ -146,16 +154,12 @@ class PentaApp(App):
 
     def _apply_text_delta(self, agent_id: UUID) -> None:
         self._render_new_messages()
-        # Update any existing streaming message widgets
-        if not self._state:
-            return
-        for msg in reversed(self._state.conversation):
-            if msg.sender.is_agent and msg.sender.agent_id == agent_id and msg.is_streaming:
-                widget = self._message_widgets.get(msg.id)
-                if widget:
-                    widget.body_text = msg.text
-                    widget.is_streaming = msg.is_streaming
-                break
+        msg = self._streaming_messages.get(agent_id)
+        if msg:
+            widget = self._message_widgets.get(msg.id)
+            if widget:
+                widget.body_text = msg.text
+                widget.is_streaming = msg.is_streaming
         chat_room = self.query_one("#chat-room", ChatRoom)
         chat_room.scroll_end(animate=False)
 
@@ -164,6 +168,8 @@ class PentaApp(App):
         if widget:
             widget.body_text = message.text
             widget.is_streaming = False
+        if message.sender.is_agent and message.sender.agent_id:
+            self._streaming_messages.pop(message.sender.agent_id, None)
 
     def _show_permission_dialog(self, request: PermissionRequest) -> None:
         # Find the streaming message widget for this agent and mount the dialog
@@ -203,16 +209,23 @@ class PentaApp(App):
         """Mount widgets for any conversation messages not yet rendered."""
         if not self._state:
             return
+        conversation = self._state.conversation
         chat_room = self.query_one("#chat-room", ChatRoom)
-        for msg in self._state.conversation:
+        for i in range(self._last_rendered_index, len(conversation)):
+            msg = conversation[i]
             if msg.id not in self._message_widgets:
                 name = self._sender_name(msg)
                 widget = chat_room.add_message(msg, name)
                 self._message_widgets[msg.id] = widget
+                if msg.is_streaming and msg.sender.is_agent and msg.sender.agent_id:
+                    self._streaming_messages[msg.sender.agent_id] = msg
+        self._last_rendered_index = len(conversation)
 
     def _sender_name(self, message: Message) -> str:
         if message.sender.is_user:
             return "You"
+        if message.sender.is_external:
+            return message.sender.name or "External"
         if self._state and message.sender.agent_id:
             agent = self._state.agent_by_id(message.sender.agent_id)
             if agent:

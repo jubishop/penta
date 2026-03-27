@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -33,13 +34,14 @@ def parse(raw: str, agents: list[AgentConfig]) -> ParsedInput:
 def extract_mentions(text: str, agents: list[AgentConfig]) -> set[UUID]:
     lower = text.lower()
 
-    if "all" == lower or "@all" in lower or "@everyone" in lower:
+    if lower == "all" or re.search(r"@all\b", lower) or re.search(r"@everyone\b", lower):
         return {a.id for a in agents}
 
     mentioned: set[UUID] = set()
     for agent in agents:
         name_lower = agent.name.lower()
-        # Match bare name ("claude") or @name ("@claude")
-        if name_lower in lower or f"@{name_lower}" in lower:
+        # Word-boundary match to avoid false positives on substrings
+        # like "recodex", "claudette", or file paths containing agent names.
+        if re.search(rf"\b{re.escape(name_lower)}\b", lower):
             mentioned.add(agent.id)
     return mentioned

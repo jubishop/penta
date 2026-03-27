@@ -34,6 +34,9 @@ class ChatMessage(Vertical):
     ChatMessage .sender-gemini {
         color: dodgerblue;
     }
+    ChatMessage .sender-external {
+        color: magenta;
+    }
     ChatMessage .message-body {
         padding: 0 0 0 2;
     }
@@ -65,7 +68,9 @@ class ChatMessage(Vertical):
         label = "You"
         if not self._message.sender.is_user:
             label = self._sender_name
-            if "claude" in self._sender_name.lower():
+            if self._message.sender.is_external:
+                sender_class = "sender-external"
+            elif "claude" in self._sender_name.lower():
                 sender_class = "sender-claude"
             elif "codex" in self._sender_name.lower():
                 sender_class = "sender-codex"

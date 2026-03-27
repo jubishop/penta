@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
 from typing import Callable
@@ -44,6 +45,7 @@ class AppState:
         self.on_status_changed: Callable[[UUID, object], None] | None = None
         self.on_external_message: Callable[[str, str], None] | None = None
         self.on_external_participant_joined: Callable[[str], None] | None = None
+        self.on_shell_output: Callable[[], None] | None = None
 
     def setup_permission_server(self, loop: asyncio.AbstractEventLoop) -> None:
         self.permission_server = PermissionServer(loop)
@@ -109,13 +111,18 @@ class AppState:
         self.conversation.append(
             Message(sender=MessageSender.user(), text=f"$ {command}")
         )
+        self.db.append_message("User", f"$ {command}")
         asyncio.create_task(self._execute_shell(command))
 
     def receive_external_message(self, sender_name: str, text: str) -> None:
         agent = self.agent_by_name(sender_name)
-        msg_sender = MessageSender.agent(agent.id) if agent else MessageSender.user()
-        display = text if (msg_sender.is_agent or sender_name == "User") else f"[{sender_name}] {text}"
-        self.conversation.append(Message(sender=msg_sender, text=display))
+        if agent:
+            msg_sender = MessageSender.agent(agent.id)
+        elif sender_name == "User":
+            msg_sender = MessageSender.user()
+        else:
+            msg_sender = MessageSender.external(sender_name)
+        self.conversation.append(Message(sender=msg_sender, text=text))
 
         # Track external participants (not built-in agents, not "User")
         if not agent and sender_name != "User" and sender_name not in self.external_participants:
@@ -161,14 +168,14 @@ class AppState:
             agent = self.agent_by_name(sender)
             if sender == "User":
                 msg_sender = MessageSender.user()
-                display = text
             elif agent:
                 msg_sender = MessageSender.agent(agent.id)
-                display = text
             else:
-                msg_sender = MessageSender.user()
-                display = f"[{sender}] {text}"
-            self.conversation.append(Message(sender=msg_sender, text=display))
+                msg_sender = MessageSender.external(sender)
+            stored_ts = datetime.fromisoformat(ts)
+            self.conversation.append(
+                Message(sender=msg_sender, text=text, timestamp=stored_ts)
+            )
 
     async def shutdown(self) -> None:
         for coord in self.coordinators.values():
@@ -235,20 +242,27 @@ class AppState:
             exit_code = proc.returncode
 
             if output:
-                self.conversation.append(
-                    Message(sender=MessageSender.user(), text=f"```\n{output}\n```")
-                )
+                result_text = f"```\n{output}\n```"
             elif exit_code != 0:
-                self.conversation.append(
-                    Message(
-                        sender=MessageSender.user(),
-                        text=f"[Shell exited with status {exit_code}]",
-                    )
-                )
+                result_text = f"[Shell exited with status {exit_code}]"
+            else:
+                result_text = None
         except Exception as e:
+            result_text = f"[Shell error: {e}]"
+
+        if result_text:
             self.conversation.append(
-                Message(sender=MessageSender.user(), text=f"[Shell error: {e}]")
+                Message(sender=MessageSender.user(), text=result_text)
             )
+            self.db.append_message("Shell", result_text)
+
+            # Inject shell output as context for all agents
+            tagged = TaggedMessage(sender_label="Shell", text=f"$ {command}\n{result_text}")
+            for coord in self.coordinators.values():
+                coord.inject_context(tagged)
+
+        if self.on_shell_output:
+            self.on_shell_output()
 
     # -- Permission helpers --
 

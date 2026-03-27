@@ -90,3 +90,15 @@ class TestExtractMentions:
 
     def test_empty_agents(self):
         assert extract_mentions("claude hi", []) == set()
+
+    def test_no_substring_match_in_compound_word(self):
+        agents = _agents()
+        assert extract_mentions("recodex is great", agents) == set()
+
+    def test_no_substring_match_in_file_path(self):
+        agents = _agents()
+        assert extract_mentions("src/penta/services/codex_service.py", agents) == set()
+
+    def test_no_substring_match_with_suffix(self):
+        agents = _agents()
+        assert extract_mentions("claudette is here", agents) == set()

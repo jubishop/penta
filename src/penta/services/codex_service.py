@@ -40,6 +40,13 @@ class CodexService(AgentService):
 
         await self._ensure_server(working_dir)
 
+        if not self._thread_id and session_id:
+            # Restore thread from a prior session (e.g. across restarts).
+            # If the thread no longer exists, turn/start will fail and
+            # _handle_notification clears _thread_id for the next attempt.
+            self._thread_id = session_id
+            self._thread_ready.set()
+
         if not self._thread_id:
             await self._start_thread(working_dir)
             try:
@@ -365,6 +372,9 @@ class CodexService(AgentService):
         elif method == "turn/failed":
             error = params.get("error", "Turn failed")
             log.error("[Codex] Turn failed: %s", error)
+            # Clear thread so the next send() creates a fresh one
+            self._thread_id = None
+            self._thread_ready.clear()
             if queue:
                 queue.put_nowait(
                     StreamEvent(type=StreamEventType.ERROR, error=error)

@@ -46,6 +46,9 @@ class PermissionServer:
                     granted = future.result(timeout=300)
                 except Exception:
                     granted = False
+                    server_ref._loop.call_soon_threadsafe(
+                        server_ref._cleanup_pending, tool_use_id
+                    )
 
                 decision = "allow" if granted else "deny"
                 resp_body = json.dumps({
@@ -106,6 +109,12 @@ class PermissionServer:
                 }]
             }
         })
+
+    def _cleanup_pending(self, tool_use_id: str) -> None:
+        """Remove and cancel a pending future (called on timeout/error)."""
+        future = self._pending.pop(tool_use_id, None)
+        if future and not future.done():
+            future.cancel()
 
     async def _request_permission(
         self, tool_use_id: str, tool_name: str, tool_input: str
