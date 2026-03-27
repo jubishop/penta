@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
@@ -29,6 +30,8 @@ class RouteMode(Enum):
 
 
 class AppState:
+    _MAX_ROUTING_HOPS = 3
+
     def __init__(self, directory: Path) -> None:
         self.directory = directory.resolve()
         self.agents: list[AgentConfig] = []
@@ -192,6 +195,16 @@ class AppState:
             coord.full_history = list(history)
             coord.last_prompted_index = len(history)
 
+    def start_external_polling(
+        self, relay: Callable[[str, str], None],
+    ) -> asyncio.Task:
+        """Begin polling for messages written by external processes."""
+        self.db.set_external_message_callback(relay)
+        return asyncio.create_task(self.db.poll_external_messages())
+
+    def compact_history(self) -> None:
+        self.db.compact()
+
     async def shutdown(self) -> None:
         for coord in self.coordinators.values():
             await coord.shutdown()
@@ -207,7 +220,12 @@ class AppState:
         excluding: UUID | None,
         mentioned: set[UUID],
         mode: RouteMode,
+        hops: int = 0,
     ) -> None:
+        if hops >= self._MAX_ROUTING_HOPS:
+            log.warning("Routing depth limit reached (%d hops), stopping propagation", hops)
+            return
+
         if mode == RouteMode.ALL_IF_NO_MENTIONS and not mentioned:
             responding = {
                 a.id for a in self.agents
@@ -227,11 +245,11 @@ class AppState:
 
             if agent.id in responding:
                 msg = coord.send(tagged, self.conversation)
-                asyncio.create_task(self._await_completion(msg, agent.id))
+                asyncio.create_task(self._await_completion(msg, agent.id, hops))
             else:
                 coord.inject_context(tagged)
 
-    async def _await_completion(self, message: Message, agent_id: UUID) -> None:
+    async def _await_completion(self, message: Message, agent_id: UUID, hops: int = 0) -> None:
         await message.wait_for_completion()
         if message.is_cancelled:
             return
@@ -245,15 +263,16 @@ class AppState:
         mentioned = extract_mentions(message.text, self.agents) - {agent_id}
         self._route(
             tagged, excluding=agent_id, mentioned=mentioned,
-            mode=RouteMode.MENTIONED_ONLY,
+            mode=RouteMode.MENTIONED_ONLY, hops=hops + 1,
         )
 
     _SHELL_OUTPUT_MAX = 100_000  # bytes
 
     async def _execute_shell(self, command: str) -> None:
         try:
+            shell = os.environ.get("SHELL", "/bin/sh")
             proc = await asyncio.create_subprocess_exec(
-                "/bin/zsh", "-lc", command,
+                shell, "-lc", command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=self.directory,
@@ -321,23 +340,10 @@ class AppState:
     def _resolve_permission(
         self, request: PermissionRequest, granted: bool
     ) -> None:
-        agent = self.agent_by_id(request.agent_id)
-        if not agent:
-            return
-
         coord = self.coordinators.get(request.agent_id)
         if not coord:
             return
-
-        if agent.type == AgentType.CLAUDE:
-            # HTTP hook — resolve via the permission server
-            if self.permission_server:
-                self.permission_server.resolve_permission(request.id, granted)
-        else:
-            # Codex — resolve via JSON-RPC stdin
-            asyncio.create_task(
-                coord.service.respond_to_permission(request.id, granted)
-            )
+        coord.resolve_permission(request.id, granted)
 
     # -- Callback relays --
 

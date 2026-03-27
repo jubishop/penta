@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import sqlite3
@@ -106,8 +107,6 @@ class PentaDB:
 
     async def poll_external_messages(self) -> None:
         """Background task: check for external writes every 500ms."""
-        import asyncio
-
         while True:
             await asyncio.sleep(0.5)
             rows = self.check_external_changes()

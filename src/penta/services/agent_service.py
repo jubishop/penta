@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from typing import AsyncIterator
+
+
+async def terminate_process(
+    proc: asyncio.subprocess.Process, timeout: float = 5,
+) -> None:
+    """Gracefully terminate a subprocess, falling back to kill."""
+    if proc.returncode is not None:
+        return
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
 
 
 class StreamEventType(Enum):

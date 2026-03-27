@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from penta.models import AgentType
-from penta.services.agent_service import AgentService, StreamEvent, StreamEventType
+from penta.services.agent_service import AgentService, StreamEvent, StreamEventType, terminate_process
 from penta.services.cli_env import build_cli_env
 from penta.services.permission_server import PermissionServer
 from penta.services.stream_parser import async_lines
@@ -58,7 +58,6 @@ class ClaudeService(AgentService):
         stderr_task = asyncio.create_task(proc.stderr.read())
 
         captured_session_id: str | None = None
-        full_text = ""
         received_text = False
 
         async for line in async_lines(proc.stdout):
@@ -94,8 +93,7 @@ class ClaudeService(AgentService):
                             tool_id=tool_id,
                             tool_name=tool_name,
                         )
-                    if full_text:
-                        full_text += "\n\n"
+                    if received_text:
                         yield StreamEvent(
                             type=StreamEventType.TEXT_DELTA, text="\n\n"
                         )
@@ -105,7 +103,6 @@ class ClaudeService(AgentService):
                     if delta.get("type") == "text_delta":
                         text = delta.get("text", "")
                         if text:
-                            full_text += text
                             received_text = True
                             yield StreamEvent(
                                 type=StreamEventType.TEXT_DELTA, text=text
@@ -159,13 +156,9 @@ class ClaudeService(AgentService):
     async def cancel(self) -> None:
         proc = self._current_process
         self._current_process = None
-        if proc and proc.returncode is None:
+        if proc:
             log.info("[Claude] Cancelling process pid=%d", proc.pid)
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                proc.kill()
+            await terminate_process(proc)
 
     async def shutdown(self) -> None:
         await self.cancel()

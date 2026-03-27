@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from penta.models import AgentType
-from penta.services.agent_service import AgentService, StreamEvent, StreamEventType
+from penta.services.agent_service import AgentService, StreamEvent, StreamEventType, terminate_process
 from penta.services.cli_env import build_cli_env
 from penta.services.stream_parser import async_lines
 
@@ -52,9 +52,6 @@ class GeminiService(AgentService):
 
         stderr_task = asyncio.create_task(proc.stderr.read())
 
-        captured_session_id: str | None = None
-        received_text = False
-
         async for line in async_lines(proc.stdout):
             try:
                 data = json.loads(line)
@@ -66,7 +63,6 @@ class GeminiService(AgentService):
             if msg_type == "init":
                 sid = data.get("session_id")
                 if sid:
-                    captured_session_id = sid
                     log.info("[Gemini] Session started: %s", sid)
                     yield StreamEvent(
                         type=StreamEventType.SESSION_STARTED,
@@ -80,7 +76,6 @@ class GeminiService(AgentService):
                 if role == "assistant" and data.get("delta"):
                     text = data.get("content", "")
                     if text:
-                        received_text = True
                         yield StreamEvent(
                             type=StreamEventType.TEXT_DELTA, text=text
                         )
@@ -134,13 +129,9 @@ class GeminiService(AgentService):
     async def cancel(self) -> None:
         proc = self._current_process
         self._current_process = None
-        if proc and proc.returncode is None:
+        if proc:
             log.info("[Gemini] Cancelling process pid=%d", proc.pid)
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                proc.kill()
+            await terminate_process(proc)
 
     async def shutdown(self) -> None:
         await self.cancel()

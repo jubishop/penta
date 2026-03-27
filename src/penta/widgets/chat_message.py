@@ -6,6 +6,7 @@ from textual.reactive import reactive
 from textual.widgets import Markdown, Static
 
 from penta.models import Message
+from penta.models.agent_type import AgentType
 
 
 class ChatMessage(Vertical):
@@ -55,11 +56,13 @@ class ChatMessage(Vertical):
         self,
         message: Message,
         sender_name: str,
+        sender_type: AgentType | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._message = message
         self._sender_name = sender_name
+        self._sender_type = sender_type
         self.body_text = message.text
         self.is_streaming = message.is_streaming
 
@@ -68,14 +71,10 @@ class ChatMessage(Vertical):
         label = "You"
         if not self._message.sender.is_user:
             label = self._sender_name
-            if self._message.sender.is_external:
+            if self._sender_type:
+                sender_class = f"sender-{self._sender_type.value}"
+            elif self._message.sender.is_external:
                 sender_class = "sender-external"
-            elif "claude" in self._sender_name.lower():
-                sender_class = "sender-claude"
-            elif "codex" in self._sender_name.lower():
-                sender_class = "sender-codex"
-            elif "gemini" in self._sender_name.lower():
-                sender_class = "sender-gemini"
 
         yield Static(label, classes=f"sender-label {sender_class}")
         yield Markdown(self.body_text or ("..." if self.is_streaming else ""), classes="message-body")

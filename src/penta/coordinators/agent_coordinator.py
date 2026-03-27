@@ -35,7 +35,8 @@ class AgentCoordinator:
         other_agent_names: list[str] | None = None,
     ) -> None:
         self.config = config
-        self.service: AgentService = self._create_service(permission_server)
+        self._permission_server = permission_server
+        self.service: AgentService = self._create_service()
         self.session_id: str | None = db.load_session(config.name)
         self.full_history: list[TaggedMessage] = []
         self.last_prompted_index: int = 0
@@ -79,10 +80,20 @@ class AgentCoordinator:
         )
         return response
 
+    def resolve_permission(self, request_id: str, granted: bool) -> None:
+        """Resolve a pending permission request through the appropriate channel."""
+        if self.config.type == AgentType.CLAUDE:
+            if self._permission_server:
+                self._permission_server.resolve_permission(request_id, granted)
+        else:
+            asyncio.create_task(
+                self.service.respond_to_permission(request_id, granted)
+            )
+
     def cancel(self) -> None:
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
-        asyncio.ensure_future(self.service.cancel())
+        asyncio.create_task(self.service.cancel())
 
     async def shutdown(self) -> None:
         self.cancel()
@@ -203,13 +214,11 @@ class AgentCoordinator:
         if self.on_status_changed:
             self.on_status_changed(self.config.id, status)
 
-    def _create_service(
-        self, permission_server: PermissionServer | None
-    ) -> AgentService:
+    def _create_service(self) -> AgentService:
         if self.config.type == AgentType.CLAUDE:
             return ClaudeService(
                 executable=self.config.type.find_executable(),
-                permission_server=permission_server,
+                permission_server=self._permission_server,
             )
         elif self.config.type == AgentType.GEMINI:
             return GeminiService(
