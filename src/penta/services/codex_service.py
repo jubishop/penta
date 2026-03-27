@@ -160,7 +160,7 @@ class CodexService(AgentService):
     async def _start_thread(self, working_dir: Path) -> None:
         await self._send_request("thread/start", {
             "cwd": str(working_dir),
-            "approvalPolicy": "auto-edit",
+            "approvalPolicy": "never",
         })
 
     async def _start_turn(self, thread_id: str, prompt: str) -> None:
@@ -235,6 +235,22 @@ class CodexService(AgentService):
             self._handle_notification(data)
 
     def _handle_server_response(self, data: dict) -> None:
+        # Handle JSON-RPC error responses
+        error = data.get("error")
+        if error:
+            message = error.get("message", "Unknown error") if isinstance(error, dict) else str(error)
+            log.error("[Codex] RPC error: %s", message)
+            if self._event_queue:
+                self._event_queue.put_nowait(
+                    StreamEvent(type=StreamEventType.ERROR, error=message)
+                )
+            # Unblock waiters so they don't time out silently
+            if not self._initialized.is_set():
+                self._initialized.set()
+            if not self._thread_ready.is_set():
+                self._thread_ready.set()
+            return
+
         result = data.get("result", {})
         if not isinstance(result, dict):
             return
