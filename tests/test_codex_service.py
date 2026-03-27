@@ -423,3 +423,77 @@ class TestCodexApprovalPolicy:
         method, params = sent_requests[0]
         assert method == "thread/start"
         assert params["approvalPolicy"] == "never"
+
+
+class TestCodexServerLaunch:
+    """Verify the app-server subprocess is launched with correct arguments."""
+
+    @pytest.mark.asyncio
+    async def test_no_session_source_flag(self):
+        """codex app-server must not be called with --session-source (removed
+        in codex-cli 0.117+).  The flag causes immediate process exit and
+        surfaces as 'Connection lost' to the user."""
+        captured_args: list[tuple] = []
+
+        async def fake_create_subprocess(*args, **kwargs):
+            captured_args.append(args)
+            proc = MagicMock()
+            proc.returncode = None
+            proc.stdin = MagicMock()
+            proc.stdin.write = MagicMock()
+            proc.stdin.drain = AsyncMock()
+            proc.stdout = AsyncMock()
+            proc.stderr = AsyncMock()
+            return proc
+
+        service = CodexService(executable="/usr/bin/codex")
+
+        # Mock the reader tasks so they don't actually run
+        async def noop():
+            pass
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess):
+            service._read_stdout = noop
+            service._read_stderr = noop
+            service._send_initialize = AsyncMock()
+            service._initialized.set()
+
+            await service._ensure_server(Path("/tmp"))
+
+        assert len(captured_args) == 1
+        argv = captured_args[0]
+        assert argv[0] == "/usr/bin/codex"
+        assert argv[1] == "app-server"
+        assert "--session-source" not in argv
+        assert "cli" not in argv
+
+    @pytest.mark.asyncio
+    async def test_connection_lost_on_dead_process_surfaces_error(self):
+        """When the server process dies immediately (e.g. bad CLI flags),
+        drain() raises ConnectionResetError('Connection lost').  This must
+        be surfaced as an ERROR event, not silently swallowed."""
+        service = CodexService(executable="/bin/false")
+
+        async def mock_ensure_server(working_dir):
+            service._process = MagicMock()
+            service._process.returncode = None
+            service._thread_id = None
+            return True
+
+        service._ensure_server = mock_ensure_server
+
+        async def mock_send_request(method, params):
+            if method == "thread/start":
+                raise ConnectionResetError("Connection lost")
+
+        service._send_request = mock_send_request
+
+        events = []
+        async for event in service.send("hello", None, Path("/tmp")):
+            events.append(event)
+
+        error_events = [e for e in events if e.type == StreamEventType.ERROR]
+        assert len(error_events) == 1
+        assert "Connection lost" in error_events[0].error
+        done_events = [e for e in events if e.type == StreamEventType.DONE]
+        assert len(done_events) == 1

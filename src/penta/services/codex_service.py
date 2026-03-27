@@ -141,7 +141,6 @@ class CodexService(AgentService):
         self._process = await asyncio.create_subprocess_exec(
             self._executable,
             "app-server",
-            "--session-source", "cli",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
