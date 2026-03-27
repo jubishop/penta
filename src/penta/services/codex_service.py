@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from penta.models import AgentType
-from penta.services.agent_service import AgentService, StreamEvent, StreamEventType
+from penta.services.agent_service import AgentService, StreamEvent, StreamEventType, terminate_process
 from penta.services.cli_env import build_cli_env
 from penta.services.stream_parser import async_lines
 
@@ -105,13 +105,9 @@ class CodexService(AgentService):
         await self.cancel()
         proc = self._process
         self._process = None
-        if proc and proc.returncode is None:
+        if proc:
             log.info("[Codex] Terminating app-server pid=%d", proc.pid)
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                proc.kill()
+            await terminate_process(proc)
 
         if self._reader_task:
             self._reader_task.cancel()
@@ -254,6 +250,32 @@ class CodexService(AgentService):
         elif has_method:
             self._handle_notification(data)
 
+    @staticmethod
+    def _extract_thread_id(data: dict) -> str | None:
+        """Pull thread ID from a response or notification payload."""
+        thread_obj = data.get("thread", {})
+        thread_id = thread_obj.get("id") if isinstance(thread_obj, dict) else None
+        return thread_id or data.get("threadId")
+
+    def _accept_thread_id(self, thread_id: str, label: str) -> bool:
+        """Try to deliver a thread ID to the waiting future.
+
+        Returns True if accepted, False if late/stale.
+        """
+        if not (self._thread_create_future and not self._thread_create_future.done()):
+            log.warning("[Codex] Ignoring late thread %s: %s", label, thread_id)
+            return False
+        self._thread_create_future.set_result(thread_id)
+        log.info("[Codex] Thread %s: %s", label, thread_id)
+        if self._event_queue:
+            self._event_queue.put_nowait(
+                StreamEvent(
+                    type=StreamEventType.SESSION_STARTED,
+                    session_id=thread_id,
+                )
+            )
+        return True
+
     def _handle_server_response(self, data: dict) -> None:
         # Handle JSON-RPC error responses
         error = data.get("error")
@@ -284,28 +306,9 @@ class CodexService(AgentService):
             self._initialized.set()
             log.info("[Codex] Initialized")
 
-        # thread/start response — thread ID is at result.thread.id or result.threadId
-        thread_obj = result.get("thread", {})
-        thread_id = thread_obj.get("id") if isinstance(thread_obj, dict) else None
-        thread_id = thread_id or result.get("threadId")
+        thread_id = self._extract_thread_id(result)
         if thread_id:
-            # Only accept when a future is actively waiting.  Thread
-            # creation is always request-scoped via _create_thread(),
-            # so a response without a pending future is late/stale.
-            if self._thread_create_future and not self._thread_create_future.done():
-                self._thread_id = thread_id
-                self._thread_create_future.set_result(thread_id)
-                log.info("[Codex] Thread created: %s", thread_id)
-            else:
-                log.warning("[Codex] Ignoring late thread response: %s", thread_id)
-                return
-            if self._event_queue:
-                self._event_queue.put_nowait(
-                    StreamEvent(
-                        type=StreamEventType.SESSION_STARTED,
-                        session_id=thread_id,
-                    )
-                )
+            self._accept_thread_id(thread_id, "created")
 
     def _handle_server_request(self, data: dict) -> None:
         method = data.get("method", "")
@@ -313,8 +316,6 @@ class CodexService(AgentService):
 
         raw_id = data.get("id")
         request_id = str(raw_id) if raw_id is not None else ""
-
-        queue = self._event_queue
 
         if method in (
             "item/commandExecution/requestApproval",
@@ -324,39 +325,26 @@ class CodexService(AgentService):
             # Auto-approve and log as tool use for visibility
             detail = params.get("command", "") or params.get("reason", method)
             log.info("[Codex] Auto-approving: %s", detail)
-            asyncio.ensure_future(
+            asyncio.create_task(
                 self.respond_to_permission(request_id, True)
             )
 
         else:
             # Unknown request — accept so server doesn't hang
             log.info("[Codex] Unknown request: %s, accepting", method)
-            asyncio.ensure_future(
+            asyncio.create_task(
                 self.respond_to_permission(request_id, True)
             )
 
     def _handle_notification(self, data: dict) -> None:
         method = data.get("method", "")
         params = data.get("params", {})
-        queue = self._event_queue
+        queue = self._event_queue  # local ref survives handler nulling self._event_queue
 
         if method == "thread/started":
-            thread_obj = params.get("thread", {})
-            thread_id = thread_obj.get("id") if isinstance(thread_obj, dict) else None
-            thread_id = thread_id or params.get("threadId")
+            thread_id = self._extract_thread_id(params)
             if thread_id:
-                if self._thread_create_future and not self._thread_create_future.done():
-                    self._thread_id = thread_id
-                    self._thread_create_future.set_result(thread_id)
-                    log.info("[Codex] Thread started: %s", thread_id)
-                else:
-                    log.warning("[Codex] Ignoring late thread notification: %s", thread_id)
-                    return
-                if queue:
-                    queue.put_nowait(StreamEvent(
-                        type=StreamEventType.SESSION_STARTED,
-                        session_id=thread_id,
-                    ))
+                self._accept_thread_id(thread_id, "started")
 
         elif method == "item/agentMessage/delta":
             # Streaming text delta

@@ -10,7 +10,7 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Static
 
 from penta.input_parser import ParsedChat, ParsedShell, parse
-from penta.models import AgentStatus, AgentType, Message, PermissionRequest
+from penta.models import AgentStatus, AgentType, Message, PermissionRequest, AgentConfig
 from penta.models.app_state import AppState
 from penta.widgets.chat_message import ChatMessage
 from penta.widgets.chat_room import ChatRoom
@@ -78,21 +78,20 @@ class PentaApp(App):
         state.load_chat_history()
         chat_room = self.query_one("#chat-room", ChatRoom)
         for msg in state.conversation:
-            name = self._sender_name(msg)
-            widget = chat_room.add_message(msg, name)
+            name, agent_type = self._sender_info(msg)
+            widget = chat_room.add_message(msg, name, agent_type)
             self._message_widgets[msg.id] = widget
         self._last_rendered_index = len(state.conversation)
 
         # Start external message polling
-        state.db.set_external_message_callback(
+        self._poll_task = state.start_external_polling(
             lambda sender, text: self.call_from_thread(
                 state.receive_external_message, sender, text
             )
         )
-        self._poll_task = asyncio.create_task(state.db.poll_external_messages())
 
         # Compact on startup
-        state.db.compact()
+        state.compact_history()
 
     async def on_unmount(self) -> None:
         if self._poll_task:
@@ -215,20 +214,21 @@ class PentaApp(App):
         for i in range(self._last_rendered_index, len(conversation)):
             msg = conversation[i]
             if msg.id not in self._message_widgets:
-                name = self._sender_name(msg)
-                widget = chat_room.add_message(msg, name)
+                name, agent_type = self._sender_info(msg)
+                widget = chat_room.add_message(msg, name, agent_type)
                 self._message_widgets[msg.id] = widget
                 if msg.is_streaming and msg.sender.is_agent and msg.sender.agent_id:
                     self._streaming_messages[msg.sender.agent_id] = msg
         self._last_rendered_index = len(conversation)
 
-    def _sender_name(self, message: Message) -> str:
+    def _sender_info(self, message: Message) -> tuple[str, AgentType | None]:
+        """Return (display_name, agent_type) for a message sender."""
         if message.sender.is_user:
-            return "You"
+            return "You", None
         if message.sender.is_external:
-            return message.sender.name or "External"
+            return message.sender.name or "External", None
         if self._state and message.sender.agent_id:
             agent = self._state.agent_by_id(message.sender.agent_id)
             if agent:
-                return agent.name
-        return "Agent"
+                return agent.name, agent.type
+        return "Agent", None

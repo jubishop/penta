@@ -3,6 +3,7 @@ from __future__ import annotations
 from textual.containers import VerticalScroll
 
 from penta.models import Message
+from penta.models.agent_type import AgentType
 from penta.widgets.chat_message import ChatMessage
 
 
@@ -16,11 +17,12 @@ class ChatRoom(VerticalScroll):
     """
 
     def add_message(
-        self, message: Message, sender_name: str
+        self, message: Message, sender_name: str, sender_type: AgentType | None = None,
     ) -> ChatMessage:
         widget = ChatMessage(
             message=message,
             sender_name=sender_name,
+            sender_type=sender_type,
             id=f"msg-{message.id}",
         )
         self.mount(widget)
