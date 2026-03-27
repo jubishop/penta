@@ -189,7 +189,7 @@ class AppState:
         # session resume fails after a restart.  last_prompted_index stays
         # at 0 so the first post-restart prompt replays all prior history
         # as catch-up context.  For agents that successfully resume their
-        # session natively (Claude --resume, Codex thread/resume) this is
+        # session natively (Claude --resume, Codex exec resume) this is
         # redundant but harmless.
         history = [
             TaggedMessage(sender_label=sender, text=text)
