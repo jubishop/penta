@@ -22,7 +22,7 @@ class CodexService(AgentService):
         self._thread_id: str | None = None
         self._next_request_id = 1
         self._initialized = asyncio.Event()
-        self._thread_ready = asyncio.Event()
+        self._thread_create_future: asyncio.Future[str] | None = None
         self._event_queue: asyncio.Queue[StreamEvent] | None = None
         self._reader_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
@@ -38,55 +38,42 @@ class CodexService(AgentService):
             yield StreamEvent(type=StreamEventType.DONE)
             return
 
-        await self._ensure_server(working_dir)
+        fresh_server = await self._ensure_server(working_dir)
 
-        if not self._thread_id and session_id:
-            # Restore thread from a prior session (e.g. across restarts).
-            # If the thread no longer exists, turn/start will fail and
-            # _handle_notification clears _thread_id for the next attempt.
+        if not self._thread_id and session_id and not fresh_server:
+            # Server is still running — the saved thread is valid.
             self._thread_id = session_id
-            self._thread_ready.set()
 
         if not self._thread_id:
-            await self._start_thread(working_dir)
+            # Need a new thread: either the server just started (saved
+            # session_id is stale) or there was no prior session at all.
+            # Set up the event queue first so SESSION_STARTED is captured.
+            self._event_queue = asyncio.Queue()
             try:
-                await asyncio.wait_for(self._thread_ready.wait(), timeout=10)
+                self._thread_id = await self._create_thread(working_dir)
             except asyncio.TimeoutError:
+                self._event_queue = None
                 yield StreamEvent(
                     type=StreamEventType.ERROR,
                     error="Timed out waiting for Codex thread creation",
                 )
                 yield StreamEvent(type=StreamEventType.DONE)
                 return
+            except Exception as e:
+                self._event_queue = None
+                yield StreamEvent(
+                    type=StreamEventType.ERROR, error=str(e),
+                )
+                yield StreamEvent(type=StreamEventType.DONE)
+                return
 
-        self._event_queue = asyncio.Queue()
+        if not self._event_queue:
+            self._event_queue = asyncio.Queue()
         queue = self._event_queue  # local ref survives handler nulling self._event_queue
         await self._start_turn(self._thread_id, prompt)
-        retried = False
 
         while True:
             event = await queue.get()
-
-            # If the turn failed because the thread was stale (turn/failed
-            # clears _thread_id), retry once with a fresh thread.
-            if (event.type == StreamEventType.ERROR
-                    and not self._thread_id and not retried):
-                retried = True
-                # Drain the DONE event queued after the error
-                while not queue.empty():
-                    queue.get_nowait()
-                await self._start_thread(working_dir)
-                try:
-                    await asyncio.wait_for(self._thread_ready.wait(), timeout=10)
-                except asyncio.TimeoutError:
-                    yield event
-                    yield StreamEvent(type=StreamEventType.DONE)
-                    return
-                self._event_queue = asyncio.Queue()
-                queue = self._event_queue
-                await self._start_turn(self._thread_id, prompt)
-                continue
-
             yield event
             if event.type == StreamEventType.DONE:
                 break
@@ -131,19 +118,21 @@ class CodexService(AgentService):
             self._stderr_task.cancel()
 
         self._thread_id = None
+        self._thread_create_future = None
         self._initialized.clear()
-        self._thread_ready.clear()
 
     # -- Server lifecycle --
 
-    async def _ensure_server(self, working_dir: Path) -> None:
+    async def _ensure_server(self, working_dir: Path) -> bool:
+        """Start the app-server if not running.  Returns True when a fresh
+        server was launched (all prior thread IDs are invalid)."""
         if self._process and self._process.returncode is None:
-            return
+            return False
 
         # Reset state for fresh server
         self._initialized.clear()
-        self._thread_ready.clear()
         self._thread_id = None
+        self._thread_create_future = None
         self._next_request_id = 1
 
         import os
@@ -182,10 +171,25 @@ class CodexService(AgentService):
         except asyncio.TimeoutError:
             log.error("[Codex] Initialization timed out")
 
+        return True
+
     async def _send_initialize(self) -> None:
         await self._send_request("initialize", {
             "clientInfo": {"name": "Penta", "version": "0.1.0"},
         })
+
+    async def _create_thread(self, working_dir: Path) -> str:
+        """Request-scoped thread creation.  Returns the new thread ID.
+        Raises on RPC error or timeout (caught by send())."""
+        loop = asyncio.get_running_loop()
+        self._thread_create_future = loop.create_future()
+        try:
+            await self._start_thread(working_dir)
+            return await asyncio.wait_for(
+                self._thread_create_future, timeout=10,
+            )
+        finally:
+            self._thread_create_future = None
 
     async def _start_thread(self, working_dir: Path) -> None:
         await self._send_request("thread/start", {
@@ -270,15 +274,19 @@ class CodexService(AgentService):
         if error:
             message = error.get("message", "Unknown error") if isinstance(error, dict) else str(error)
             log.error("[Codex] RPC error: %s", message)
-            if self._event_queue:
+
+            # If we're waiting for a thread, reject the future with the
+            # real error message so send() can surface it.
+            if self._thread_create_future and not self._thread_create_future.done():
+                self._thread_create_future.set_exception(RuntimeError(message))
+            elif self._event_queue:
                 self._event_queue.put_nowait(
                     StreamEvent(type=StreamEventType.ERROR, error=message)
                 )
-            # Unblock waiters so they don't time out silently
+
+            # Unblock initialize waiter so it doesn't time out silently
             if not self._initialized.is_set():
                 self._initialized.set()
-            if not self._thread_ready.is_set():
-                self._thread_ready.set()
             return
 
         result = data.get("result", {})
@@ -296,8 +304,9 @@ class CodexService(AgentService):
         thread_id = thread_id or result.get("threadId")
         if thread_id:
             self._thread_id = thread_id
-            self._thread_ready.set()
             log.info("[Codex] Thread created: %s", thread_id)
+            if self._thread_create_future and not self._thread_create_future.done():
+                self._thread_create_future.set_result(thread_id)
             if self._event_queue:
                 self._event_queue.put_nowait(
                     StreamEvent(
@@ -345,8 +354,9 @@ class CodexService(AgentService):
             thread_id = thread_id or params.get("threadId")
             if thread_id:
                 self._thread_id = thread_id
-                self._thread_ready.set()
                 log.info("[Codex] Thread started: %s", thread_id)
+                if self._thread_create_future and not self._thread_create_future.done():
+                    self._thread_create_future.set_result(thread_id)
                 if queue:
                     queue.put_nowait(StreamEvent(
                         type=StreamEventType.SESSION_STARTED,
@@ -395,9 +405,6 @@ class CodexService(AgentService):
         elif method == "turn/failed":
             error = params.get("error", "Turn failed")
             log.error("[Codex] Turn failed: %s", error)
-            # Clear thread so the next send() creates a fresh one
-            self._thread_id = None
-            self._thread_ready.clear()
             if queue:
                 queue.put_nowait(
                     StreamEvent(type=StreamEventType.ERROR, error=error)

@@ -176,29 +176,26 @@ class TestCodexToolVisibility:
 
 
 class TestCodexSessionRestore:
-    """Verify that send() uses session_id to restore _thread_id."""
+    """Verify that send() uses session_id correctly based on server state."""
 
     @pytest.mark.asyncio
-    async def test_session_id_restores_thread_id(self):
-        """send() should use session_id to set _thread_id without calling
-        _start_thread, and proceed to start a turn on that thread."""
+    async def test_session_id_reused_when_server_running(self):
+        """When the server is already running, send() should restore
+        _thread_id from session_id without calling _start_thread."""
         service = CodexService(executable="/bin/false")
-        # Simulate a running server so _ensure_server is a no-op
+        # Simulate a running server so _ensure_server returns False
         service._process = MagicMock()
         service._process.returncode = None
         service._initialized.set()
 
         started_threads: list[Path] = []
-        original_start_thread = service._start_thread
 
         async def track_start_thread(working_dir):
             started_threads.append(working_dir)
 
         service._start_thread = track_start_thread
 
-        # Mock _send_request; when _start_turn is called feed DONE into queue
         turn_thread_ids: list[str] = []
-        original_send_request = service._send_request
 
         async def mock_send_request(method, params):
             if method == "turn/start":
@@ -222,64 +219,139 @@ class TestCodexSessionRestore:
         assert any(e.type == StreamEventType.TEXT_DELTA and e.text == "ok" for e in events)
 
     @pytest.mark.asyncio
-    async def test_stale_session_retries_with_fresh_thread(self):
-        """If the restored session_id is stale, send() should transparently
-        retry with a fresh thread instead of surfacing the error."""
+    async def test_session_id_skipped_on_fresh_server(self):
+        """When the server was just started (fresh process), the saved
+        session_id is stale — send() must skip it and create a new thread.
+        The new thread's SESSION_STARTED must be emitted for persistence."""
         service = CodexService(executable="/bin/false")
-        service._process = MagicMock()
-        service._process.returncode = None
-        service._initialized.set()
+        # Do NOT set _process — _ensure_server will "start" a fresh server.
+        # We mock it to just set the flag and return True.
+        async def mock_ensure_server(working_dir):
+            service._process = MagicMock()
+            service._process.returncode = None
+            service._thread_id = None
+            return True
+
+        service._ensure_server = mock_ensure_server
+
+        async def mock_send_request(method, params):
+            if method == "thread/start":
+                service._handle_server_response({
+                    "id": 1,
+                    "result": {"thread": {"id": "fresh-thread"}},
+                })
+            elif method == "turn/start":
+                service._event_queue.put_nowait(
+                    StreamEvent(type=StreamEventType.TEXT_DELTA, text="new session")
+                )
+                service._event_queue.put_nowait(
+                    StreamEvent(type=StreamEventType.DONE)
+                )
+
+        service._send_request = mock_send_request
+
+        events = []
+        async for event in service.send("hello", "stale-session", Path("/tmp")):
+            events.append(event)
+
+        # Must have created a fresh thread, NOT reused the stale session
+        assert service._thread_id == "fresh-thread"
+        assert any(e.type == StreamEventType.TEXT_DELTA and e.text == "new session" for e in events)
+        # SESSION_STARTED emitted so the coordinator persists the new ID
+        session_events = [e for e in events if e.type == StreamEventType.SESSION_STARTED]
+        assert len(session_events) == 1
+        assert session_events[0].session_id == "fresh-thread"
+
+    @pytest.mark.asyncio
+    async def test_thread_start_rpc_error_surfaces_exact_message(self):
+        """If thread/start gets an RPC error, send() should surface the
+        exact error text, not a generic wrapper."""
+        service = CodexService(executable="/bin/false")
+
+        async def mock_ensure_server(working_dir):
+            service._process = MagicMock()
+            service._process.returncode = None
+            service._thread_id = None
+            return True
+
+        service._ensure_server = mock_ensure_server
+
+        async def mock_send_request(method, params):
+            if method == "thread/start":
+                service._handle_server_response({
+                    "id": 1,
+                    "error": {"message": "cannot create thread"},
+                })
+
+        service._send_request = mock_send_request
+
+        events = []
+        async for event in service.send("hello", None, Path("/tmp")):
+            events.append(event)
+
+        error_events = [e for e in events if e.type == StreamEventType.ERROR]
+        assert len(error_events) == 1
+        assert error_events[0].error == "cannot create thread"
+        assert service._thread_id is None
+        # Future must be cleaned up
+        assert service._thread_create_future is None
+
+    @pytest.mark.asyncio
+    async def test_failed_thread_start_does_not_break_next_send(self):
+        """After a thread/start RPC error, the next send() should be able
+        to create a thread successfully — no wedged state."""
+        service = CodexService(executable="/bin/false")
+
+        async def mock_ensure_server(working_dir):
+            service._process = MagicMock()
+            service._process.returncode = None
+            service._thread_id = None
+            return True
+
+        service._ensure_server = mock_ensure_server
 
         call_count = 0
 
         async def mock_send_request(method, params):
             nonlocal call_count
-            if method == "turn/start":
+            if method == "thread/start":
                 call_count += 1
                 if call_count == 1:
-                    # First attempt: simulate turn/failed (stale thread)
-                    service._handle_notification({
-                        "method": "turn/failed",
-                        "params": {"error": "Thread not found"},
+                    # First attempt: RPC error
+                    service._handle_server_response({
+                        "id": 1,
+                        "error": {"message": "cannot create thread"},
                     })
                 else:
                     # Second attempt: success
-                    service._event_queue.put_nowait(
-                        StreamEvent(type=StreamEventType.TEXT_DELTA, text="retried")
-                    )
-                    service._event_queue.put_nowait(
-                        StreamEvent(type=StreamEventType.DONE)
-                    )
-            elif method == "thread/start":
-                # _start_thread creates a new thread
-                service._thread_id = "fresh-thread"
-                service._thread_ready.set()
+                    service._handle_server_response({
+                        "id": 2,
+                        "result": {"thread": {"id": "thread-ok"}},
+                    })
+            elif method == "turn/start":
+                service._event_queue.put_nowait(
+                    StreamEvent(type=StreamEventType.TEXT_DELTA, text="recovered")
+                )
+                service._event_queue.put_nowait(
+                    StreamEvent(type=StreamEventType.DONE)
+                )
 
         service._send_request = mock_send_request
 
-        events = []
-        async for event in service.send("hello", "stale-thread", Path("/tmp")):
-            events.append(event)
-
-        assert service._thread_id == "fresh-thread"
-        # No error events should have been yielded to the caller
-        assert not any(e.type == StreamEventType.ERROR for e in events)
-        assert any(e.type == StreamEventType.TEXT_DELTA and e.text == "retried" for e in events)
-
-    @pytest.mark.asyncio
-    async def test_turn_failed_clears_thread_id(self):
-        service = CodexService(executable="/bin/false")
-        service._thread_id = "stale-thread"
-        service._thread_ready.set()
-        service._event_queue = asyncio.Queue()
-
-        service._handle_notification({
-            "method": "turn/failed",
-            "params": {"error": "Thread not found"},
-        })
-
+        # First send: should fail with the RPC error
+        events1 = []
+        async for event in service.send("hello", None, Path("/tmp")):
+            events1.append(event)
+        assert any(e.type == StreamEventType.ERROR for e in events1)
         assert service._thread_id is None
-        assert not service._thread_ready.is_set()
+
+        # Second send: should succeed — no wedged state
+        events2 = []
+        async for event in service.send("hello", None, Path("/tmp")):
+            events2.append(event)
+        assert service._thread_id == "thread-ok"
+        assert any(e.type == StreamEventType.TEXT_DELTA and e.text == "recovered" for e in events2)
+        assert not any(e.type == StreamEventType.ERROR for e in events2)
 
 
 class TestCodexApprovalPolicy:
