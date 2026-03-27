@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
@@ -113,13 +112,6 @@ class AppState:
             tagged, excluding=None, mentioned=mentioned,
             mode=RouteMode.ALL_IF_NO_MENTIONS,
         )
-
-    def run_shell_command(self, command: str) -> None:
-        self.conversation.append(
-            Message(sender=MessageSender.user(), text=f"$ {command}")
-        )
-        self.db.append_message("User", f"$ {command}")
-        asyncio.create_task(self._execute_shell(command))
 
     def receive_external_message(self, sender_name: str, text: str) -> None:
         agent = self.agent_by_name(sender_name)
@@ -270,47 +262,6 @@ class AppState:
             mode=RouteMode.MENTIONED_ONLY, hops=hops + 1,
         )
 
-    _SHELL_OUTPUT_MAX = 100_000  # bytes
-
-    async def _execute_shell(self, command: str) -> None:
-        try:
-            shell = os.environ.get("SHELL", "/bin/sh")
-            proc = await asyncio.create_subprocess_exec(
-                shell, "-lc", command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=self.directory,
-            )
-            data = await proc.stdout.read(self._SHELL_OUTPUT_MAX + 1)
-            truncated = len(data) > self._SHELL_OUTPUT_MAX
-            if truncated:
-                data = data[:self._SHELL_OUTPUT_MAX]
-            await proc.wait()
-            output = data.decode("utf-8", errors="replace").strip()
-            exit_code = proc.returncode
-
-            if truncated:
-                output += f"\n... (truncated at {self._SHELL_OUTPUT_MAX // 1000}KB)"
-
-            if output:
-                result_text = f"```\n{output}\n```"
-            elif exit_code != 0:
-                result_text = f"[Shell exited with status {exit_code}]"
-            else:
-                result_text = None
-        except Exception as e:
-            result_text = f"[Shell error: {e}]"
-
-        if result_text:
-            self.conversation.append(
-                Message(sender=MessageSender.external("Shell"), text=result_text)
-            )
-            self.db.append_message("Shell", result_text)
-
-            # Inject shell output as context for all agents
-            tagged = TaggedMessage(sender_label="Shell", text=f"$ {command}\n{result_text}")
-            for coord in self.coordinators.values():
-                coord.inject_context(tagged)
 
         if self.on_shell_output:
             self.on_shell_output()

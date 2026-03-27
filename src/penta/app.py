@@ -9,7 +9,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer, Static
 
-from penta.input_parser import ParsedChat, ParsedShell, parse
+from penta.input_parser import ParsedChat, parse
 from penta.models import AgentStatus, AgentType, Message, PermissionRequest, AgentConfig
 from penta.models.app_state import AppState
 from penta.widgets.chat_message import ChatMessage
@@ -106,12 +106,8 @@ class PentaApp(App):
             return
         parsed = parse(event.text, self._state.agents)
 
-        if isinstance(parsed, ParsedShell):
-            self._state.run_shell_command(parsed.command)
-            self._render_new_messages()
-        elif isinstance(parsed, ParsedChat):
-            self._state.send_user_message(parsed.text)
-            self._render_new_messages()
+        self._state.send_user_message(parsed.text)
+        self._render_new_messages()
 
     # -- Permission handling --
 

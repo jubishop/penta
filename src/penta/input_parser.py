@@ -13,20 +13,8 @@ class ParsedChat:
     mentioned_ids: set[UUID]
 
 
-@dataclass(frozen=True)
-class ParsedShell:
-    command: str
-
-
-ParsedInput = ParsedChat | ParsedShell
-
-
-def parse(raw: str, agents: list[AgentConfig]) -> ParsedInput:
+def parse(raw: str, agents: list[AgentConfig]) -> ParsedChat:
     trimmed = raw.strip()
-
-    if trimmed.startswith("$"):
-        return ParsedShell(command=trimmed[1:].strip())
-
     mentioned = extract_mentions(trimmed, agents)
     return ParsedChat(text=trimmed, mentioned_ids=mentioned)
 

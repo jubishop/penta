@@ -196,3 +196,48 @@ class TestCancelledStreamIsNotTreatedAsSuccess:
 
         coordinator._current_task.cancel()
         await asyncio.sleep(0.05)
+
+
+class TestServiceFailureDoesNotWedgeUI:
+    """If the service raises an unexpected exception, the message must still
+    be marked complete and the UI cleaned up."""
+
+    @pytest.mark.asyncio
+    async def test_exception_marks_complete_and_fires_callback(self, db: PentaDB):
+        class ExplodingService(AgentService):
+            async def send(self, prompt, session_id, working_dir):
+                yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="partial")
+                raise ConnectionResetError("boom")
+
+            async def respond_to_permission(self, request_id, granted):
+                pass
+
+            async def cancel(self):
+                pass
+
+            async def shutdown(self):
+                pass
+
+        config = AgentConfig(
+            id=uuid4(), name="exploder", type=AgentType.CLAUDE, status=AgentStatus.IDLE,
+        )
+        coord = AgentCoordinator(
+            config=config, working_dir=Path("/tmp"), db=db, other_agent_names=[],
+        )
+        coord.service = ExplodingService()
+
+        completed: list[Message] = []
+        coord.on_stream_complete = lambda msg, _aid: completed.append(msg)
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="hello")
+        response = coord.send(tagged, conversation)
+        await asyncio.sleep(0.1)
+
+        # Must have fired the callback
+        assert len(completed) == 1
+        assert completed[0].is_error is True
+        assert not completed[0].is_streaming
+        assert "failed" in completed[0].text.lower()
+        # Status should be IDLE, not stuck
+        assert coord.config.status == AgentStatus.IDLE

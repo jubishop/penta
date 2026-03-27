@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from penta.input_parser import ParsedChat, ParsedShell, extract_mentions, parse
+from penta.input_parser import ParsedChat, extract_mentions, parse
 from penta.models import AgentConfig, AgentType
 
 
@@ -12,16 +12,6 @@ def _agents() -> list[AgentConfig]:
 
 
 class TestParse:
-    def test_shell_command(self):
-        result = parse("$ git status", [])
-        assert isinstance(result, ParsedShell)
-        assert result.command == "git status"
-
-    def test_shell_command_strips(self):
-        result = parse("  $  ls -la  ", [])
-        assert isinstance(result, ParsedShell)
-        assert result.command == "ls -la"
-
     def test_chat_no_mentions(self):
         agents = _agents()
         result = parse("hello world", agents)
