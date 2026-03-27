@@ -8,6 +8,7 @@ from enum import Enum
 class AgentType(Enum):
     CLAUDE = "claude"
     CODEX = "codex"
+    GEMINI = "gemini"
 
     @property
     def display_name(self) -> str:
@@ -15,7 +16,7 @@ class AgentType(Enum):
 
     @property
     def color(self) -> str:
-        return {"claude": "orange", "codex": "green"}[self.value]
+        return {"claude": "orange", "codex": "green", "gemini": "dodger_blue"}[self.value]
 
     def find_executable(self) -> str | None:
         env_key = f"PENTA_{self.value.upper()}_PATH"

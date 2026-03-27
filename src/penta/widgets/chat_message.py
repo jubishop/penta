@@ -31,6 +31,9 @@ class ChatMessage(Vertical):
     ChatMessage .sender-codex {
         color: green;
     }
+    ChatMessage .sender-gemini {
+        color: dodgerblue;
+    }
     ChatMessage .message-body {
         padding: 0 0 0 2;
     }
@@ -66,6 +69,8 @@ class ChatMessage(Vertical):
                 sender_class = "sender-claude"
             elif "codex" in self._sender_name.lower():
                 sender_class = "sender-codex"
+            elif "gemini" in self._sender_name.lower():
+                sender_class = "sender-gemini"
 
         yield Static(label, classes=f"sender-label {sender_class}")
         yield Markdown(self.body_text or ("..." if self.is_streaming else ""), classes="message-body")

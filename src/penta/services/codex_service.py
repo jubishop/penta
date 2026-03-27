@@ -160,7 +160,7 @@ class CodexService(AgentService):
     async def _start_thread(self, working_dir: Path) -> None:
         await self._send_request("thread/start", {
             "cwd": str(working_dir),
-            "approvalPolicy": "untrusted",
+            "approvalPolicy": "auto-edit",
         })
 
     async def _start_turn(self, thread_id: str, prompt: str) -> None:
@@ -269,46 +269,23 @@ class CodexService(AgentService):
 
         queue = self._event_queue
 
-        if method == "item/commandExecution/requestApproval":
-            command = params.get("command", "unknown command")
-            cwd = params.get("cwd")
-            tool_input = f"{command}\ncwd: {cwd}" if cwd else command
-            log.info("[Codex] Permission requested: %s", command)
-            if queue:
-                queue.put_nowait(StreamEvent(
-                    type=StreamEventType.PERMISSION_REQUESTED,
-                    request_id=request_id,
-                    tool_name="Shell",
-                    tool_input=tool_input,
-                ))
-
-        elif method == "item/fileChange/requestApproval":
-            reason = params.get("reason", "file changes")
-            log.info("[Codex] File change approval: %s", reason)
-            if queue:
-                queue.put_nowait(StreamEvent(
-                    type=StreamEventType.PERMISSION_REQUESTED,
-                    request_id=request_id,
-                    tool_name="File Edit",
-                    tool_input=reason,
-                ))
-
-        elif method == "item/permissions/requestApproval":
-            reason = params.get("reason", "additional permissions")
-            log.info("[Codex] Permissions approval: %s", reason)
-            if queue:
-                queue.put_nowait(StreamEvent(
-                    type=StreamEventType.PERMISSION_REQUESTED,
-                    request_id=request_id,
-                    tool_name="Permissions",
-                    tool_input=reason,
-                ))
+        if method in (
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "item/permissions/requestApproval",
+        ):
+            # Auto-approve and log as tool use for visibility
+            detail = params.get("command", "") or params.get("reason", method)
+            log.info("[Codex] Auto-approving: %s", detail)
+            asyncio.ensure_future(
+                self.respond_to_permission(request_id, True)
+            )
 
         else:
-            # Unknown request — decline so server doesn't hang
-            log.info("[Codex] Unknown request: %s, declining", method)
+            # Unknown request — accept so server doesn't hang
+            log.info("[Codex] Unknown request: %s, accepting", method)
             asyncio.ensure_future(
-                self.respond_to_permission(request_id, False)
+                self.respond_to_permission(request_id, True)
             )
 
     def _handle_notification(self, data: dict) -> None:

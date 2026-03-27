@@ -18,6 +18,7 @@ from penta.models import (
 from penta.services.agent_service import AgentService, StreamEventType
 from penta.services.claude_service import ClaudeService
 from penta.services.codex_service import CodexService
+from penta.services.gemini_service import GeminiService
 from penta.services.db import PentaDB
 from penta.services.permission_server import PermissionServer
 
@@ -197,6 +198,10 @@ class AgentCoordinator:
             return ClaudeService(
                 executable=self.config.type.find_executable(),
                 permission_server=permission_server,
+            )
+        elif self.config.type == AgentType.GEMINI:
+            return GeminiService(
+                executable=self.config.type.find_executable(),
             )
         else:
             return CodexService(
