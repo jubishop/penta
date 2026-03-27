@@ -125,10 +125,11 @@ class TestCancelledStreamIsNotTreatedAsSuccess:
         await asyncio.sleep(0.05)
 
     @pytest.mark.asyncio
-    async def test_cancelled_stream_does_not_fire_callback(
+    async def test_cancelled_stream_fires_callback_with_cancelled_flag(
         self, coordinator: AgentCoordinator
     ):
-        """on_stream_complete must NOT fire for a cancelled stream."""
+        """on_stream_complete MUST fire for cancelled streams (UI cleanup)
+        but the message should carry is_cancelled=True."""
         completed: list[Message] = []
         coordinator.on_stream_complete = lambda msg, _aid: completed.append(msg)
 
@@ -142,7 +143,8 @@ class TestCancelledStreamIsNotTreatedAsSuccess:
         coordinator.send(tagged2, conversation)
         await asyncio.sleep(0.05)
 
-        assert len(completed) == 0, "on_stream_complete should not fire for cancelled stream"
+        assert len(completed) == 1, "on_stream_complete must fire so the UI can clear streaming state"
+        assert completed[0].is_cancelled is True
 
         coordinator._current_task.cancel()
         await asyncio.sleep(0.05)

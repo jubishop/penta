@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from penta.services.agent_service import StreamEvent, StreamEventType
 from penta.services.codex_service import CodexService
 
 
@@ -178,46 +180,91 @@ class TestCodexSessionRestore:
 
     @pytest.mark.asyncio
     async def test_session_id_restores_thread_id(self):
+        """send() should use session_id to set _thread_id without calling
+        _start_thread, and proceed to start a turn on that thread."""
         service = CodexService(executable="/bin/false")
         # Simulate a running server so _ensure_server is a no-op
         service._process = MagicMock()
         service._process.returncode = None
         service._initialized.set()
 
-        assert service._thread_id is None
-
-        # Provide a session_id; send() should restore _thread_id from it
-        # instead of calling _start_thread.
-        started_threads = []
+        started_threads: list[Path] = []
         original_start_thread = service._start_thread
 
         async def track_start_thread(working_dir):
             started_threads.append(working_dir)
 
-        service._send_request = AsyncMock()
         service._start_thread = track_start_thread
 
-        # Create an event queue and immediately put DONE so send() returns
-        async def fake_send(prompt, session_id, working_dir):
-            # Call the real logic but intercept at turn/start
-            await service._ensure_server(working_dir)
-            if not service._thread_id and session_id:
-                service._thread_id = session_id
-                service._thread_ready.set()
-            # We just test the restore logic, not the full send flow
+        # Mock _send_request; when _start_turn is called feed DONE into queue
+        turn_thread_ids: list[str] = []
+        original_send_request = service._send_request
 
-        # Directly test the restore logic
-        service._thread_id = None
-        session_id = "restored-thread-123"
-        # Simulate what send() does: _ensure_server (no-op), then check _thread_id
-        await service._ensure_server(__import__("pathlib").Path("/tmp"))
-        if not service._thread_id and session_id:
-            service._thread_id = session_id
-            service._thread_ready.set()
+        async def mock_send_request(method, params):
+            if method == "turn/start":
+                turn_thread_ids.append(params["threadId"])
+                service._event_queue.put_nowait(
+                    StreamEvent(type=StreamEventType.TEXT_DELTA, text="ok")
+                )
+                service._event_queue.put_nowait(
+                    StreamEvent(type=StreamEventType.DONE)
+                )
+
+        service._send_request = mock_send_request
+
+        events = []
+        async for event in service.send("hello", "restored-thread-123", Path("/tmp")):
+            events.append(event)
 
         assert service._thread_id == "restored-thread-123"
-        assert service._thread_ready.is_set()
         assert started_threads == []  # _start_thread was NOT called
+        assert turn_thread_ids == ["restored-thread-123"]
+        assert any(e.type == StreamEventType.TEXT_DELTA and e.text == "ok" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_stale_session_retries_with_fresh_thread(self):
+        """If the restored session_id is stale, send() should transparently
+        retry with a fresh thread instead of surfacing the error."""
+        service = CodexService(executable="/bin/false")
+        service._process = MagicMock()
+        service._process.returncode = None
+        service._initialized.set()
+
+        call_count = 0
+
+        async def mock_send_request(method, params):
+            nonlocal call_count
+            if method == "turn/start":
+                call_count += 1
+                if call_count == 1:
+                    # First attempt: simulate turn/failed (stale thread)
+                    service._handle_notification({
+                        "method": "turn/failed",
+                        "params": {"error": "Thread not found"},
+                    })
+                else:
+                    # Second attempt: success
+                    service._event_queue.put_nowait(
+                        StreamEvent(type=StreamEventType.TEXT_DELTA, text="retried")
+                    )
+                    service._event_queue.put_nowait(
+                        StreamEvent(type=StreamEventType.DONE)
+                    )
+            elif method == "thread/start":
+                # _start_thread creates a new thread
+                service._thread_id = "fresh-thread"
+                service._thread_ready.set()
+
+        service._send_request = mock_send_request
+
+        events = []
+        async for event in service.send("hello", "stale-thread", Path("/tmp")):
+            events.append(event)
+
+        assert service._thread_id == "fresh-thread"
+        # No error events should have been yielded to the caller
+        assert not any(e.type == StreamEventType.ERROR for e in events)
+        assert any(e.type == StreamEventType.TEXT_DELTA and e.text == "retried" for e in events)
 
     @pytest.mark.asyncio
     async def test_turn_failed_clears_thread_id(self):

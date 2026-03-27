@@ -81,6 +81,7 @@ class PentaApp(App):
             name = self._sender_name(msg)
             widget = chat_room.add_message(msg, name)
             self._message_widgets[msg.id] = widget
+        self._last_rendered_index = len(state.conversation)
 
         # Start external message polling
         state.db.set_external_message_callback(

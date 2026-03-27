@@ -252,7 +252,7 @@ class AppState:
 
         if result_text:
             self.conversation.append(
-                Message(sender=MessageSender.user(), text=result_text)
+                Message(sender=MessageSender.external("Shell"), text=result_text)
             )
             self.db.append_message("Shell", result_text)
 

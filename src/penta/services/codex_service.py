@@ -60,10 +60,33 @@ class CodexService(AgentService):
                 return
 
         self._event_queue = asyncio.Queue()
+        queue = self._event_queue  # local ref survives handler nulling self._event_queue
         await self._start_turn(self._thread_id, prompt)
+        retried = False
 
         while True:
-            event = await self._event_queue.get()
+            event = await queue.get()
+
+            # If the turn failed because the thread was stale (turn/failed
+            # clears _thread_id), retry once with a fresh thread.
+            if (event.type == StreamEventType.ERROR
+                    and not self._thread_id and not retried):
+                retried = True
+                # Drain the DONE event queued after the error
+                while not queue.empty():
+                    queue.get_nowait()
+                await self._start_thread(working_dir)
+                try:
+                    await asyncio.wait_for(self._thread_ready.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    yield event
+                    yield StreamEvent(type=StreamEventType.DONE)
+                    return
+                self._event_queue = asyncio.Queue()
+                queue = self._event_queue
+                await self._start_turn(self._thread_id, prompt)
+                continue
+
             yield event
             if event.type == StreamEventType.DONE:
                 break

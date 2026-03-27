@@ -175,6 +175,11 @@ class AgentCoordinator:
             response.is_cancelled = True
             response.mark_complete()
             self._set_status(AgentStatus.IDLE)
+            # Still fire on_stream_complete so the UI clears the streaming
+            # widget state.  _await_completion guards on is_cancelled to
+            # prevent persistence / routing.
+            if self.on_stream_complete:
+                self.on_stream_complete(response, self.config.id)
             return
 
         response.mark_complete()
