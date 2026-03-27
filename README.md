@@ -8,8 +8,7 @@ Built with [Textual](https://github.com/textualize/textual/).
 
 ```bash
 git clone git@github.com:jubishop/penta.git
-cd penta/
-pipx install -e .
+pipx install -e penta/
 ```
 
 This installs `penta` as a global command in an isolated environment. If you don't have pipx: `brew install pipx`.
