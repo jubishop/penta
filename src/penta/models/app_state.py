@@ -48,7 +48,6 @@ class AppState:
         self.on_status_changed: Callable[[UUID, object], None] | None = None
         self.on_external_message: Callable[[str, str], None] | None = None
         self.on_external_participant_joined: Callable[[str], None] | None = None
-        self.on_shell_output: Callable[[], None] | None = None
 
     def setup_permission_server(self, loop: asyncio.AbstractEventLoop) -> None:
         self.permission_server = PermissionServer(loop)
@@ -259,10 +258,6 @@ class AppState:
             tagged, excluding=agent_id, mentioned=mentioned,
             mode=RouteMode.MENTIONED_ONLY, hops=hops + 1,
         )
-
-
-        if self.on_shell_output:
-            self.on_shell_output()
 
     # -- Permission helpers --
 
