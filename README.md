@@ -7,7 +7,8 @@ Built with [Textual](https://github.com/textualize/textual/).
 ## Install
 
 ```bash
-cd penta/                  # the root of this repo
+git clone git@github.com:jubishop/penta.git
+cd penta/
 pipx install -e .
 ```
 
