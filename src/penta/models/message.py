@@ -16,6 +16,7 @@ class Message:
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     is_streaming: bool = False
     is_error: bool = False
+    is_cancelled: bool = False
     _done: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
 
     def __post_init__(self) -> None:

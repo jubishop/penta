@@ -172,6 +172,10 @@ class AgentCoordinator:
 
         except asyncio.CancelledError:
             log.info("[%s] Stream cancelled", self.config.name)
+            response.is_cancelled = True
+            response.mark_complete()
+            self._set_status(AgentStatus.IDLE)
+            return
 
         response.mark_complete()
         self._set_status(AgentStatus.IDLE)

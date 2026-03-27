@@ -206,6 +206,8 @@ class AppState:
 
     async def _await_completion(self, message: Message, agent_id: UUID) -> None:
         await message.wait_for_completion()
+        if message.is_cancelled:
+            return
         agent = self.agent_by_id(agent_id)
         if not agent:
             return
