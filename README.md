@@ -7,6 +7,8 @@ Built with [Textual](https://github.com/textualize/textual/).
 ## Install
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
 
@@ -17,6 +19,14 @@ Requires `claude`, `codex`, and/or `gemini` CLIs on your PATH (or set `PENTA_CLA
 ```bash
 penta                  # chat scoped to current directory
 penta ~/projects/foo   # chat scoped to a specific directory
+```
+
+If the `penta` command isn't found or errors with `ModuleNotFoundError`, use the module form or the convenience script:
+
+```bash
+python -m penta                # always works inside the venv
+./run.sh                       # same thing, no activation needed
+./run.sh ~/projects/foo
 ```
 
 Type a message and press **Ctrl+Enter** to send.
