@@ -36,15 +36,6 @@ claude and codex debate this        → both respond
 (no name mentioned)                 → all respond
 ```
 
-### Shell commands
-
-Prefix with `$` to run a shell command inline:
-
-```
-$ git status
-$ ls -la src/
-```
-
 ### Permissions
 
 Only **Claude** prompts for tool-use approval — an inline dialog appears when it needs to run a shell command, edit a file, etc. Click **Allow** or **Deny**.

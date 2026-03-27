@@ -113,18 +113,18 @@ class AppState:
             mode=RouteMode.ALL_IF_NO_MENTIONS,
         )
 
+    _RESERVED_NAMES = {"user", "shell", "system"}
+
     def receive_external_message(self, sender_name: str, text: str) -> None:
-        agent = self.agent_by_name(sender_name)
-        if agent:
-            msg_sender = MessageSender.agent(agent.id)
-        elif sender_name == "User":
-            msg_sender = MessageSender.user()
-        else:
-            msg_sender = MessageSender.external(sender_name)
+        # External writers may not impersonate built-in agents or reserved
+        # names — always treat them as external senders.
+        if self.agent_by_name(sender_name) or sender_name.lower() in self._RESERVED_NAMES:
+            sender_name = f"{sender_name} (external)"
+
+        msg_sender = MessageSender.external(sender_name)
         self.conversation.append(Message(sender=msg_sender, text=text))
 
-        # Track external participants (not built-in agents, not "User")
-        if not agent and sender_name != "User" and sender_name not in self.external_participants:
+        if sender_name not in self.external_participants:
             self.external_participants.add(sender_name)
             if self.on_external_participant_joined:
                 self.on_external_participant_joined(sender_name)
@@ -132,12 +132,10 @@ class AppState:
         if self.on_external_message:
             self.on_external_message(sender_name, text)
 
-        tag_label = sender_name
-        tagged = TaggedMessage(sender_label=tag_label, text=text)
+        tagged = TaggedMessage(sender_label=sender_name, text=text)
         mentioned = extract_mentions(text, self.agents)
-        excluding = agent.id if agent else None
         self._route(
-            tagged, excluding=excluding, mentioned=mentioned,
+            tagged, excluding=None, mentioned=mentioned,
             mode=RouteMode.MENTIONED_ONLY,
         )
 
