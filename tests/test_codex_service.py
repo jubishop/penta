@@ -354,6 +354,43 @@ class TestCodexSessionRestore:
         assert not any(e.type == StreamEventType.ERROR for e in events2)
 
 
+class TestLateThreadResponse:
+    """Late thread/start responses after timeout must not clobber state."""
+
+    def test_late_response_does_not_overwrite_thread_id(self):
+        """If _thread_id is already set (from a successful later attempt),
+        a late response from a timed-out thread/start must be ignored."""
+        service = CodexService(executable="/bin/false")
+        service._event_queue = asyncio.Queue()
+        # Simulate: thread was already created successfully
+        service._thread_id = "good-thread"
+        # Future is None (timed out and cleaned up)
+        service._thread_create_future = None
+
+        # Late response arrives for the old timed-out request
+        service._handle_server_response({
+            "id": 1,
+            "result": {"thread": {"id": "late-thread"}},
+        })
+
+        # Must NOT overwrite the good thread
+        assert service._thread_id == "good-thread"
+
+    def test_late_notification_does_not_overwrite_thread_id(self):
+        """Same as above but via thread/started notification path."""
+        service = CodexService(executable="/bin/false")
+        service._event_queue = asyncio.Queue()
+        service._thread_id = "good-thread"
+        service._thread_create_future = None
+
+        service._handle_notification({
+            "method": "thread/started",
+            "params": {"thread": {"id": "late-thread"}},
+        })
+
+        assert service._thread_id == "good-thread"
+
+
 class TestCodexApprovalPolicy:
     """Verify the thread is started with never approval policy."""
 

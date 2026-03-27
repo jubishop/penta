@@ -41,7 +41,7 @@ class AgentCoordinator:
         self.last_prompted_index: int = 0
         self._working_dir = working_dir
         self._db = db
-        self._other_names = other_agent_names or []
+        self._other_names: list[str] = other_agent_names or []
         self._current_task: asyncio.Task | None = None
 
         # Callbacks set by AppState / App
@@ -49,6 +49,9 @@ class AgentCoordinator:
         self.on_stream_complete: Callable[[Message, UUID], None] | None = None
         self.on_permission_request: Callable[[PermissionRequest], None] | None = None
         self.on_status_changed: Callable[[UUID, AgentStatus], None] | None = None
+
+    def set_other_agent_names(self, names: list[str]) -> None:
+        self._other_names = names
 
     def inject_context(self, tagged: TaggedMessage) -> None:
         """Record a message for catch-up delivery on next send()."""

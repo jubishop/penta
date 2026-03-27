@@ -8,6 +8,7 @@ from typing import AsyncIterator
 
 from penta.models import AgentType
 from penta.services.agent_service import AgentService, StreamEvent, StreamEventType
+from penta.services.cli_env import build_cli_env
 from penta.services.stream_parser import async_lines
 
 log = logging.getLogger(__name__)
@@ -135,20 +136,6 @@ class CodexService(AgentService):
         self._thread_create_future = None
         self._next_request_id = 1
 
-        import os
-
-        env = os.environ.copy()
-        extra_paths = [
-            str(Path.home() / ".local" / "bin"),
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-        ]
-        existing = env.get("PATH", "")
-        for p in extra_paths:
-            if p not in existing:
-                existing = f"{p}:{existing}"
-        env["PATH"] = existing
-
         log.info("[Codex] Launching app-server: %s", self._executable)
 
         self._process = await asyncio.create_subprocess_exec(
@@ -159,7 +146,7 @@ class CodexService(AgentService):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=working_dir,
-            env=env,
+            env=build_cli_env(),
         )
 
         self._reader_task = asyncio.create_task(self._read_stdout())
@@ -303,10 +290,19 @@ class CodexService(AgentService):
         thread_id = thread_obj.get("id") if isinstance(thread_obj, dict) else None
         thread_id = thread_id or result.get("threadId")
         if thread_id:
-            self._thread_id = thread_id
-            log.info("[Codex] Thread created: %s", thread_id)
+            # Only accept the thread if someone is waiting for it.
+            # A late response after timeout must not clobber _thread_id.
             if self._thread_create_future and not self._thread_create_future.done():
+                self._thread_id = thread_id
                 self._thread_create_future.set_result(thread_id)
+                log.info("[Codex] Thread created: %s", thread_id)
+            elif not self._thread_id:
+                # No future but no thread yet — first-time setup
+                self._thread_id = thread_id
+                log.info("[Codex] Thread created: %s", thread_id)
+            else:
+                log.warning("[Codex] Ignoring late thread response: %s", thread_id)
+                return
             if self._event_queue:
                 self._event_queue.put_nowait(
                     StreamEvent(
@@ -353,10 +349,16 @@ class CodexService(AgentService):
             thread_id = thread_obj.get("id") if isinstance(thread_obj, dict) else None
             thread_id = thread_id or params.get("threadId")
             if thread_id:
-                self._thread_id = thread_id
-                log.info("[Codex] Thread started: %s", thread_id)
                 if self._thread_create_future and not self._thread_create_future.done():
+                    self._thread_id = thread_id
                     self._thread_create_future.set_result(thread_id)
+                    log.info("[Codex] Thread started: %s", thread_id)
+                elif not self._thread_id:
+                    self._thread_id = thread_id
+                    log.info("[Codex] Thread started: %s", thread_id)
+                else:
+                    log.warning("[Codex] Ignoring late thread notification: %s", thread_id)
+                    return
                 if queue:
                     queue.put_nowait(StreamEvent(
                         type=StreamEventType.SESSION_STARTED,

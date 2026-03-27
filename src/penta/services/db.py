@@ -1,18 +1,30 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 
+def _default_storage_root() -> Path:
+    """Respect PENTA_DATA_DIR, fall back to ~/.local/share."""
+    override = os.environ.get("PENTA_DATA_DIR")
+    if override:
+        return Path(override)
+    return Path.home() / ".local" / "share"
+
+
 class PentaDB:
     MAX_MESSAGES = 2000
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(
+        self, directory: Path, storage_root: Path | None = None,
+    ) -> None:
         self._directory = directory.resolve()
-        self._db_path = self._resolve_path(self._directory)
+        self._storage_root = storage_root or _default_storage_root()
+        self._db_path = self._resolve_path(self._directory, self._storage_root)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._db_path)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -106,15 +118,16 @@ class PentaDB:
     # -- Internal --
 
     @staticmethod
-    def _resolve_path(directory: Path) -> Path:
+    def _resolve_path(directory: Path, storage_root: Path) -> Path:
         dir_hash = hashlib.sha256(str(directory).encode()).hexdigest()
-        return Path.home() / ".local" / "share" / "penta" / "chats" / dir_hash / "penta.db"
+        return storage_root / "penta" / "chats" / dir_hash / "penta.db"
 
     @staticmethod
-    def db_path_for(directory: Path) -> Path:
+    def db_path_for(directory: Path, storage_root: Path | None = None) -> Path:
         """Public helper for MCP server to find the DB path."""
         resolved = directory.resolve()
-        return PentaDB._resolve_path(resolved)
+        root = storage_root or _default_storage_root()
+        return PentaDB._resolve_path(resolved, root)
 
     def _create_tables(self) -> None:
         self._conn.executescript("""

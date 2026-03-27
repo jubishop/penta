@@ -11,6 +11,7 @@ from uuid import UUID
 from penta.coordinators.agent_coordinator import AgentCoordinator
 from penta.input_parser import extract_mentions
 from penta.models.agent_config import AgentConfig
+from penta.models.agent_status import AgentStatus
 from penta.models.agent_type import AgentType
 from penta.models.message import Message
 from penta.models.message_sender import MessageSender
@@ -54,6 +55,9 @@ class AppState:
 
     def add_agent(self, name: str, agent_type: AgentType) -> AgentConfig:
         config = AgentConfig(name=name, type=agent_type)
+        if not agent_type.find_executable():
+            config.status = AgentStatus.DISCONNECTED
+            log.warning("Agent %s: executable not found, marked DISCONNECTED", name)
         self.agents.append(config)
 
         other_names = [a.name for a in self.agents if a.id != config.id]
@@ -78,9 +82,9 @@ class AppState:
             if agent.id != config.id:
                 coord = self.coordinators.get(agent.id)
                 if coord:
-                    coord._other_names = [
-                        a.name for a in self.agents if a.id != agent.id
-                    ]
+                    coord.set_other_agent_names(
+                        [a.name for a in self.agents if a.id != agent.id]
+                    )
 
         return config
 
@@ -164,7 +168,8 @@ class AppState:
     # -- Lifecycle --
 
     def load_chat_history(self) -> None:
-        for row_id, sender, text, ts in self.db.get_messages():
+        rows = self.db.get_messages()
+        for row_id, sender, text, ts in rows:
             agent = self.agent_by_name(sender)
             if sender == "User":
                 msg_sender = MessageSender.user()
@@ -176,6 +181,16 @@ class AppState:
             self.conversation.append(
                 Message(sender=msg_sender, text=text, timestamp=stored_ts)
             )
+
+        # Hydrate coordinator catch-up history so context works even if
+        # session resume fails after a restart.
+        history = [
+            TaggedMessage(sender_label=sender, text=text)
+            for _, sender, text, _ in rows
+        ]
+        for coord in self.coordinators.values():
+            coord.full_history = list(history)
+            coord.last_prompted_index = len(history)
 
     async def shutdown(self) -> None:
         for coord in self.coordinators.values():
@@ -194,7 +209,10 @@ class AppState:
         mode: RouteMode,
     ) -> None:
         if mode == RouteMode.ALL_IF_NO_MENTIONS and not mentioned:
-            responding = {a.id for a in self.agents}
+            responding = {
+                a.id for a in self.agents
+                if a.status != AgentStatus.DISCONNECTED
+            }
         else:
             responding = mentioned
 
@@ -228,6 +246,8 @@ class AppState:
             mode=RouteMode.MENTIONED_ONLY,
         )
 
+    _SHELL_OUTPUT_MAX = 100_000  # bytes
+
     async def _execute_shell(self, command: str) -> None:
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -236,10 +256,16 @@ class AppState:
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=self.directory,
             )
-            data = await proc.stdout.read()
+            data = await proc.stdout.read(self._SHELL_OUTPUT_MAX + 1)
+            truncated = len(data) > self._SHELL_OUTPUT_MAX
+            if truncated:
+                data = data[:self._SHELL_OUTPUT_MAX]
             await proc.wait()
             output = data.decode("utf-8", errors="replace").strip()
             exit_code = proc.returncode
+
+            if truncated:
+                output += f"\n... (truncated at {self._SHELL_OUTPUT_MAX // 1000}KB)"
 
             if output:
                 result_text = f"```\n{output}\n```"

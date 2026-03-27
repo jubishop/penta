@@ -8,6 +8,7 @@ from typing import AsyncIterator
 
 from penta.models import AgentType
 from penta.services.agent_service import AgentService, StreamEvent, StreamEventType
+from penta.services.cli_env import build_cli_env
 from penta.services.stream_parser import async_lines
 
 log = logging.getLogger(__name__)
@@ -156,18 +157,5 @@ class GeminiService(AgentService):
         args += ["-p", prompt]
         return args
 
-    def _build_env(self) -> dict[str, str] | None:
-        import os
-
-        env = os.environ.copy()
-        extra_paths = [
-            str(Path.home() / ".local" / "bin"),
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-        ]
-        existing = env.get("PATH", "")
-        for p in extra_paths:
-            if p not in existing:
-                existing = f"{p}:{existing}"
-        env["PATH"] = existing
-        return env
+    def _build_env(self) -> dict[str, str]:
+        return build_cli_env()
