@@ -35,6 +35,7 @@ class AppState:
         self.pending_permissions: list[PermissionRequest] = []
         self.db = PentaDB(self.directory)
         self.permission_server: PermissionServer | None = None
+        self.external_participants: set[str] = set()
 
         # Callbacks for the TUI layer
         self.on_text_delta: Callable[[UUID, str], None] | None = None
@@ -42,6 +43,7 @@ class AppState:
         self.on_permission_request: Callable[[PermissionRequest], None] | None = None
         self.on_status_changed: Callable[[UUID, object], None] | None = None
         self.on_external_message: Callable[[str, str], None] | None = None
+        self.on_external_participant_joined: Callable[[str], None] | None = None
 
     def setup_permission_server(self, loop: asyncio.AbstractEventLoop) -> None:
         self.permission_server = PermissionServer(loop)
@@ -114,6 +116,12 @@ class AppState:
         msg_sender = MessageSender.agent(agent.id) if agent else MessageSender.user()
         display = text if (msg_sender.is_agent or sender_name == "User") else f"[{sender_name}] {text}"
         self.conversation.append(Message(sender=msg_sender, text=display))
+
+        # Track external participants (not built-in agents, not "User")
+        if not agent and sender_name != "User" and sender_name not in self.external_participants:
+            self.external_participants.add(sender_name)
+            if self.on_external_participant_joined:
+                self.on_external_participant_joined(sender_name)
 
         if self.on_external_message:
             self.on_external_message(sender_name, text)

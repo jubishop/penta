@@ -33,3 +33,21 @@ class StatusIndicator(Static):
         }
         dot = dot_map.get(self.status, "[dim]○[/]")
         return f"{self._config.name}{dot}"
+
+
+class ExternalIndicator(Static):
+    """Shows an external participant name with an orange dot."""
+
+    DEFAULT_CSS = """
+    ExternalIndicator {
+        width: auto;
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, name: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._name = name
+
+    def render(self) -> str:
+        return f"{self._name}[orange1]●[/]"

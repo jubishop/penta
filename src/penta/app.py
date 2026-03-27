@@ -16,7 +16,7 @@ from penta.widgets.chat_message import ChatMessage
 from penta.widgets.chat_room import ChatRoom
 from penta.widgets.input_bar import InputBar
 from penta.widgets.permission_dialog import PermissionDialog
-from penta.widgets.status_indicator import StatusIndicator
+from penta.widgets.status_indicator import ExternalIndicator, StatusIndicator
 
 log = logging.getLogger(__name__)
 
@@ -57,10 +57,11 @@ class PentaApp(App):
         state.on_permission_request = self._on_permission_request
         state.on_status_changed = self._on_status_changed
         state.on_external_message = self._on_external_message
+        state.on_external_participant_joined = self._on_external_participant_joined
 
         # Seed agents
-        claude = state.add_agent("Claude", AgentType.CLAUDE)
-        codex = state.add_agent("Codex", AgentType.CODEX)
+        claude = state.add_agent("claude", AgentType.CLAUDE)
+        codex = state.add_agent("codex", AgentType.CODEX)
 
         # Add status indicators
         status_bar = self.query_one("#status-bar", Horizontal)
@@ -135,6 +136,10 @@ class PentaApp(App):
 
     def _on_external_message(self, sender: str, text: str) -> None:
         self._render_new_messages()
+
+    def _on_external_participant_joined(self, name: str) -> None:
+        status_bar = self.query_one("#status-bar", Horizontal)
+        status_bar.mount(ExternalIndicator(name))
 
     # -- UI updates --
 
