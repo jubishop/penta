@@ -1,0 +1,19 @@
+Screen {
+    layout: vertical;
+}
+
+#header-bar {
+    height: 1;
+    dock: top;
+    background: $primary-background;
+    padding: 0 1;
+}
+
+#header-bar #app-title {
+    width: 1fr;
+    text-style: bold;
+}
+
+#status-bar {
+    width: auto;
+}
