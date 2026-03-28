@@ -31,18 +31,20 @@ class CodexService(CliAgentService):
     ) -> list[str]:
         effective_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
 
+        # -a and -s are top-level codex flags; they must precede the
+        # exec subcommand or exec-resume will reject them.
+        args = ["-a", "never", "-s", "workspace-write"]
+
         if session_id:
-            args = ["exec", "resume", session_id]
+            args += ["exec", "resume", session_id]
         else:
-            args = ["exec"]
+            args += ["exec"]
 
         if self._model:
             args += ["--model", self._model]
 
         args += [
             "--json",
-            "-a", "never",
-            "-s", "workspace-write",
             "--skip-git-repo-check",
             effective_prompt,
         ]
