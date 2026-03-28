@@ -5,7 +5,9 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from penta_mcp.server import send_to_group_chat, _RESERVED_NAMES
+from penta.models.agent_type import AgentType
+from penta.models.message_sender import RESERVED_SENDER_NAMES
+from penta_mcp.server import send_to_group_chat
 
 
 class TestMCPSenderValidation:
@@ -57,7 +59,7 @@ class TestMCPSenderValidation:
 
     def test_all_reserved_names_covered(self):
         """Every reserved name should get the (external) suffix."""
-        for name in _RESERVED_NAMES:
+        for name in RESERVED_SENDER_NAMES | AgentType.all_names():
             with patch("penta_mcp.server.PentaDB") as MockDB:
                 mock_db = MagicMock()
                 MockDB.return_value = mock_db
