@@ -21,14 +21,9 @@ from penta.services.codex_service import CodexService
 from penta.services.gemini_service import GeminiService
 from penta.services.db import PentaDB
 from penta.services.permission_server import PermissionServer
+from penta.utils import log_task_error
 
 log = logging.getLogger(__name__)
-
-
-def _log_task_error(task: asyncio.Task) -> None:
-    """Done-callback for fire-and-forget tasks — log exceptions."""
-    if not task.cancelled() and task.exception():
-        log.error("Background task failed", exc_info=task.exception())
 
 
 class AgentCoordinator:
@@ -40,11 +35,12 @@ class AgentCoordinator:
         executable: str | None = None,
         permission_server: PermissionServer | None = None,
         other_agent_names: list[str] | None = None,
+        session_id: str | None = None,
     ) -> None:
         self.config = config
         self._permission_server = permission_server
         self.service: AgentService = self._create_service(executable)
-        self.session_id: str | None = db.load_session(config.name)
+        self.session_id = session_id
         self.full_history: list[TaggedMessage] = []
         self.last_prompted_index: int = 0
         self._pre_prompt_index: int = 0
@@ -52,6 +48,7 @@ class AgentCoordinator:
         self._db = db
         self._other_names: list[str] = other_agent_names or []
         self._current_task: asyncio.Task | None = None
+        self._cancel_task: asyncio.Task | None = None
 
         # Callbacks set by AppState / App
         self.on_text_delta: Callable[[UUID, str], None] | None = None
@@ -104,11 +101,13 @@ class AgentCoordinator:
     def cancel(self) -> None:
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
-        task = asyncio.create_task(self.service.cancel())
-        task.add_done_callback(_log_task_error)
+        self._cancel_task = asyncio.create_task(self.service.cancel())
+        self._cancel_task.add_done_callback(log_task_error)
 
     async def shutdown(self) -> None:
         self.cancel()
+        if self._cancel_task:
+            await self._cancel_task
         await self.service.shutdown()
 
     # -- Prompt construction --
@@ -166,7 +165,7 @@ class AgentCoordinator:
                 match event.type:
                     case StreamEventType.SESSION_STARTED:
                         self.session_id = event.session_id
-                        self._db.save_session(self.config.name, event.session_id)
+                        await self._db.save_session(self.config.name, event.session_id)
                         log.info(
                             "[%s] Session: %s", self.config.name, event.session_id
                         )

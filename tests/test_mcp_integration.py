@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from penta.models.app_state import AppState
+from penta.app_state import AppState
 from penta.models import AgentType, Message
 from penta.services.db import PentaDB
 from penta_mcp.server import send_to_group_chat
@@ -26,12 +26,14 @@ def project_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def app_state(project_dir: Path) -> AppState:
+async def app_state(project_dir: Path) -> AppState:
     """An AppState backed by the same project directory as the MCP server."""
     state = AppState(project_dir)
-    state.add_agent("Claude", AgentType.CLAUDE)
-    state.add_agent("Codex", AgentType.CODEX)
-    return state
+    await state.connect()
+    await state.add_agent("Claude", AgentType.CLAUDE)
+    await state.add_agent("Codex", AgentType.CODEX)
+    yield state
+    await state.db.close()
 
 
 def _mcp_write(project_dir: Path, sender: str, text: str) -> str:
@@ -47,7 +49,7 @@ class TestMCPToAppIntegration:
         """A message written by MCP should be picked up by the DB poller
         and delivered to receive_external_message."""
         received: list[tuple[str, str]] = []
-        app_state.on_external_message = lambda sender, text: received.append((sender, text))
+        app_state.router.on_external_message = lambda sender, text: received.append((sender, text))
 
         # Start polling
         poll_task = app_state.start_external_polling(app_state.receive_external_message)
@@ -66,7 +68,7 @@ class TestMCPToAppIntegration:
     async def test_spoofed_agent_name_is_relabeled(self, app_state: AppState, project_dir: Path):
         """An external writer claiming to be 'Claude' should be relabeled."""
         received: list[tuple[str, str]] = []
-        app_state.on_external_message = lambda sender, text: received.append((sender, text))
+        app_state.router.on_external_message = lambda sender, text: received.append((sender, text))
 
         poll_task = app_state.start_external_polling(app_state.receive_external_message)
 
@@ -86,7 +88,7 @@ class TestMCPToAppIntegration:
     async def test_spoofed_user_name_is_relabeled(self, app_state: AppState, project_dir: Path):
         """An external writer claiming to be 'User' should be relabeled."""
         received: list[tuple[str, str]] = []
-        app_state.on_external_message = lambda sender, text: received.append((sender, text))
+        app_state.router.on_external_message = lambda sender, text: received.append((sender, text))
 
         poll_task = app_state.start_external_polling(app_state.receive_external_message)
 
@@ -102,7 +104,7 @@ class TestMCPToAppIntegration:
     async def test_normal_external_name_preserved(self, app_state: AppState, project_dir: Path):
         """A legitimate external name should pass through unchanged."""
         received: list[tuple[str, str]] = []
-        app_state.on_external_message = lambda sender, text: received.append((sender, text))
+        app_state.router.on_external_message = lambda sender, text: received.append((sender, text))
 
         poll_task = app_state.start_external_polling(app_state.receive_external_message)
 
@@ -135,7 +137,7 @@ class TestMCPToAppIntegration:
     async def test_external_participant_tracked(self, app_state: AppState, project_dir: Path):
         """New external participants should be tracked."""
         joined: list[str] = []
-        app_state.on_external_participant_joined = lambda name: joined.append(name)
+        app_state.router.on_external_participant_joined = lambda name: joined.append(name)
 
         poll_task = app_state.start_external_polling(app_state.receive_external_message)
 

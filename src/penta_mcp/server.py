@@ -6,15 +6,28 @@ Installed as `penta-mcp-server` entry point.
 
 from __future__ import annotations
 
+import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from penta.models.agent_type import AgentType
-from penta.models.message_sender import RESERVED_SENDER_NAMES
-from penta.services.db import PentaDB
+from penta.models.message_sender import sanitize_external_name
+from penta.services.db import CREATE_TABLES_SQL, PentaDB
 
 mcp = FastMCP("penta-group-chat")
+
+
+def _open_db(directory: str) -> sqlite3.Connection:
+    """Open a sync sqlite3 connection for the given project directory."""
+    path = PentaDB.db_path_for(Path(directory))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.executescript(CREATE_TABLES_SQL)
+    return conn
 
 
 @mcp.tool()
@@ -24,14 +37,18 @@ def get_group_chat(directory: str, last_n: int = 50) -> str:
     if not path.exists():
         return f"No group chat messages yet for {directory}."
 
-    db = PentaDB(Path(directory))
+    conn = _open_db(directory)
     try:
-        rows = db.get_messages(limit=last_n)
+        rows = conn.execute(
+            "SELECT id, sender, text, timestamp FROM messages "
+            "ORDER BY id DESC LIMIT ?",
+            (last_n,),
+        ).fetchall()[::-1]
         if not rows:
             return f"No group chat messages yet for {directory}."
         return "\n".join(f"[{ts}] {sender}: {text}" for _, sender, text, ts in rows)
     finally:
-        db.close()
+        conn.close()
 
 
 @mcp.tool()
@@ -39,15 +56,17 @@ def send_to_group_chat(directory: str, message: str, your_name: str) -> str:
     """Post a message to the Penta group chat. All agents and the user can see it."""
     if not your_name or not your_name.strip():
         return "Error: your_name is required."
-    name = your_name.strip()
-    if name.lower() in RESERVED_SENDER_NAMES | AgentType.all_names():
-        name = f"{name} (external)"
-    db = PentaDB(Path(directory))
+    name = sanitize_external_name(your_name.strip(), AgentType.all_names())
+    conn = _open_db(directory)
     try:
-        db.append_message(name, message)
+        conn.execute(
+            "INSERT INTO messages (sender, text, timestamp) VALUES (?, ?, ?)",
+            (name, message, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
         return "Message posted to group chat."
     finally:
-        db.close()
+        conn.close()
 
 
 def main() -> None:

@@ -9,6 +9,7 @@ requires-python = ">=3.11"
 dependencies = [
     "textual>=1.0.0",
     "mcp>=1.0.0",
+    "aiosqlite>=0.20.0",
 ]
 
 [project.optional-dependencies]
@@ -27,3 +28,4 @@ packages = ["src/penta", "src/penta_mcp"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = ["error"]

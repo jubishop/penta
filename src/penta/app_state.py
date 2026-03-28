@@ -1,0 +1,202 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Callable
+from uuid import UUID
+
+from penta.coordinators.agent_coordinator import AgentCoordinator
+from penta.models.agent_config import AgentConfig
+from penta.models.agent_status import AgentStatus
+from penta.models.agent_type import AgentType
+from penta.models.message import Message
+from penta.models.message_sender import MessageSender
+from penta.models.permission_request import PermissionRequest
+from penta.models.tagged_message import TaggedMessage
+from penta.permissions import PermissionManager
+from penta.routing import MessageRouter
+from penta.services.db import PentaDB
+from penta.services.permission_server import PermissionServer
+
+log = logging.getLogger(__name__)
+
+
+class AppState:
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory.resolve()
+        self.agents: list[AgentConfig] = []
+        self.coordinators: dict[UUID, AgentCoordinator] = {}
+        self.conversation: list[Message] = []
+        self.db = PentaDB(self.directory)
+        self.permission_server: PermissionServer | None = None
+
+        self.permissions = PermissionManager(self.agents, self.coordinators)
+        self.router = MessageRouter(
+            self.agents, self.coordinators, self.conversation, self.db,
+        )
+
+        # Callbacks for the TUI layer
+        self.on_text_delta: Callable[[UUID, str], None] | None = None
+        self.on_stream_complete: Callable[[Message, UUID], None] | None = None
+        self.on_status_changed: Callable[[UUID, AgentStatus], None] | None = None
+
+    async def connect(self) -> None:
+        await self.db.connect()
+
+    def setup_permission_server(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.permission_server = PermissionServer(loop)
+        self.permission_server.set_request_callback(
+            self.permissions.handle_http_request,
+        )
+        self.permission_server.start()
+
+    # -- Agent management --
+
+    async def add_agent(
+        self, name: str, agent_type: AgentType, model: str | None = None,
+    ) -> AgentConfig:
+        config = AgentConfig(name=name, type=agent_type, model=model)
+        executable = agent_type.find_executable()
+        if not executable:
+            config.status = AgentStatus.DISCONNECTED
+            log.warning("Agent %s: executable not found, marked DISCONNECTED", name)
+        self.agents.append(config)
+
+        session_id = await self.db.load_session(config.name)
+        other_names = [a.name for a in self.agents if a.id != config.id]
+        coordinator = AgentCoordinator(
+            config=config,
+            working_dir=self.directory,
+            db=self.db,
+            executable=executable,
+            permission_server=self.permission_server,
+            other_agent_names=other_names,
+            session_id=session_id,
+        )
+
+        # Wire callbacks through to TUI
+        coordinator.on_text_delta = self._relay_text_delta
+        coordinator.on_stream_complete = self._relay_stream_complete
+        coordinator.on_status_changed = self._relay_status_changed
+
+        self.coordinators[config.id] = coordinator
+
+        # Update other coordinators' awareness of this new agent
+        for agent in self.agents:
+            if agent.id != config.id:
+                coord = self.coordinators.get(agent.id)
+                if coord:
+                    coord.set_other_agent_names(
+                        [a.name for a in self.agents if a.id != agent.id]
+                    )
+
+        return config
+
+    def agent_by_id(self, agent_id: UUID) -> AgentConfig | None:
+        return next((a for a in self.agents if a.id == agent_id), None)
+
+    def agent_by_name(self, name: str) -> AgentConfig | None:
+        lower = name.lower()
+        return next((a for a in self.agents if a.name.lower() == lower), None)
+
+    @property
+    def directory_name(self) -> str:
+        return self.directory.name
+
+    @property
+    def external_participants(self) -> set[str]:
+        return self.router.external_participants
+
+    # -- Delegated to router --
+
+    async def send_user_message(self, text: str) -> None:
+        await self.router.send_user_message(text)
+
+    def receive_external_message(self, sender_name: str, text: str) -> None:
+        self.router.receive_external_message(sender_name, text)
+
+    # -- Delegated to permissions --
+
+    def approve_permission(self, request_id: str) -> None:
+        self.permissions.approve(request_id)
+
+    def deny_permission(self, request_id: str) -> None:
+        self.permissions.deny(request_id)
+
+    def pending_permission_for(self, agent_id: UUID) -> PermissionRequest | None:
+        return self.permissions.pending_for(agent_id)
+
+    # -- Lifecycle --
+
+    async def load_chat_history(self) -> None:
+        rows = await self.db.get_messages()
+        for row_id, sender, text, ts in rows:
+            agent = self.agent_by_name(sender)
+            if sender == "User":
+                msg_sender = MessageSender.user()
+            elif agent:
+                msg_sender = MessageSender.agent(agent.id)
+            else:
+                msg_sender = MessageSender.external(sender)
+            stored_ts = datetime.fromisoformat(ts)
+            self.conversation.append(
+                Message(sender=msg_sender, text=text, timestamp=stored_ts)
+            )
+
+        history = [
+            TaggedMessage(sender_label=sender, text=text)
+            for _, sender, text, _ in rows
+        ]
+        for coord in self.coordinators.values():
+            coord.full_history = list(history)
+            coord.last_prompted_index = 0
+
+    def start_external_polling(
+        self, relay: Callable[[str, str], None],
+    ) -> asyncio.Task:
+        """Begin polling for messages written by external processes."""
+        self.db.set_external_message_callback(relay)
+        return asyncio.create_task(self.db.poll_external_messages())
+
+    async def compact_history(self) -> int:
+        """Compact DB and trim in-memory lists to match. Returns count trimmed."""
+        await self.db.compact()
+        limit = self.db.MAX_MESSAGES
+        trimmed = max(0, len(self.conversation) - limit)
+        if trimmed:
+            del self.conversation[:trimmed]
+            for coord in self.coordinators.values():
+                coord_trimmed = max(0, len(coord.full_history) - limit)
+                if coord_trimmed:
+                    del coord.full_history[:coord_trimmed]
+                    coord.last_prompted_index = max(
+                        0, coord.last_prompted_index - coord_trimmed,
+                    )
+                    coord._pre_prompt_index = max(
+                        0, coord._pre_prompt_index - coord_trimmed,
+                    )
+        return trimmed
+
+    async def shutdown(self) -> None:
+        for coord in self.coordinators.values():
+            await coord.shutdown()
+        if self.permission_server:
+            self.permission_server.stop()
+        await self.db.close()
+
+    # -- Callback relays --
+
+    def _relay_text_delta(self, agent_id: UUID, delta: str) -> None:
+        if self.on_text_delta:
+            self.on_text_delta(agent_id, delta)
+
+    def _relay_stream_complete(self, message: Message, agent_id: UUID) -> None:
+        if self.on_stream_complete:
+            self.on_stream_complete(message, agent_id)
+
+    def _relay_status_changed(self, agent_id: UUID, status: AgentStatus) -> None:
+        if self.on_status_changed:
+            self.on_status_changed(agent_id, status)

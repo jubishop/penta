@@ -40,12 +40,15 @@ class HangingService(AgentService):
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> PentaDB:
-    return PentaDB(tmp_path / "test-project", storage_root=tmp_path)
+async def db(tmp_path: Path) -> PentaDB:
+    db = PentaDB(tmp_path / "test-project", storage_root=tmp_path)
+    await db.connect()
+    yield db
+    await db.close()
 
 
 @pytest.fixture
-def coordinator(db: PentaDB) -> AgentCoordinator:
+async def coordinator(db: PentaDB) -> AgentCoordinator:
     config = AgentConfig(
         id=uuid4(),
         name="test-agent",
@@ -312,6 +315,43 @@ class TestCancelledStreamRollsBackPromptIndex:
 
         coordinator._current_task.cancel()
         await asyncio.sleep(0.05)
+
+
+class TestShutdownAwaitsCancelTask:
+    """Regression: shutdown() must wait for the in-flight cancel task to finish
+    before calling service.shutdown(), otherwise cancel and shutdown race."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_completes_before_shutdown(self, db: PentaDB):
+        class SlowCancelService(AgentService):
+            def __init__(self):
+                self.order: list[str] = []
+
+            async def send(self, prompt, session_id, working_dir, system_prompt=None):
+                yield StreamEvent(type=StreamEventType.DONE)
+
+            async def cancel(self):
+                await asyncio.sleep(0.05)
+                self.order.append("cancel")
+
+            async def shutdown(self):
+                self.order.append("shutdown")
+
+        config = AgentConfig(
+            id=uuid4(), name="slow-cancel", type=AgentType.CLAUDE,
+            status=AgentStatus.IDLE,
+        )
+        coord = AgentCoordinator(
+            config=config, working_dir=Path("/tmp"), db=db,
+            other_agent_names=[],
+        )
+        service = SlowCancelService()
+        coord.service = service
+
+        await coord.shutdown()
+
+        # Before the fix, shutdown would fire before cancel finished
+        assert service.order == ["cancel", "shutdown"]
 
 
 class TestServiceFailureDoesNotWedgeUI:

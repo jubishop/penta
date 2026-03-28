@@ -412,6 +412,42 @@ class TestClaudeFullTranscript:
 
 # -- Helpers ------------------------------------------------------------------
 
+class TestConcurrentStreamingGuard:
+    """CliAgentService must reject concurrent send() calls."""
+
+    async def test_send_while_streaming_raises(self):
+        service = ClaudeService(executable="/usr/bin/claude")
+        # Simulate a stream already in progress
+        service._streaming = True
+        with pytest.raises(RuntimeError, match="already streaming"):
+            async for _ in service.send("second", None, Path("/tmp")):
+                pass
+
+    async def test_streaming_flag_cleared_after_normal_completion(self):
+        events = await _run_with_lines([
+            json.dumps({"type": "assistant", "message": {"id": "msg1", "content": [
+                {"type": "text", "text": "hi"}
+            ]}}),
+        ])
+        # _run_with_lines creates a new service and fully iterates — no way
+        # to inspect it afterward. Instead, verify via a dedicated service:
+        service = ClaudeService(executable="/usr/bin/claude")
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = asyncio.StreamReader()
+        proc.stdout.feed_data(b'{"type":"result","result":"done"}\n')
+        proc.stdout.feed_eof()
+        proc.stderr = asyncio.StreamReader()
+        proc.stderr.feed_data(b"")
+        proc.stderr.feed_eof()
+        proc.wait = AsyncMock(return_value=0)
+
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            async for _ in service.send("test", None, Path("/tmp")):
+                pass
+        assert service._streaming is False
+
+
 async def _run_with_lines(
     lines: list[str],
     returncode: int = 0,

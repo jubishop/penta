@@ -10,7 +10,7 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Static
 
 from penta.models import AgentStatus, AgentType, Message, PermissionRequest, AgentConfig
-from penta.models.app_state import AppState
+from penta.app_state import AppState
 from penta.widgets.chat_message import ChatMessage
 from penta.widgets.chat_room import ChatRoom
 from penta.widgets.input_bar import InputBar
@@ -51,21 +51,22 @@ class PentaApp(App):
     async def on_mount(self) -> None:
         state = AppState(self._directory)
         self._state = state
+        await state.connect()
         loop = asyncio.get_running_loop()
         state.setup_permission_server(loop)
 
         # Wire callbacks
         state.on_text_delta = self._on_text_delta
         state.on_stream_complete = self._on_stream_complete
-        state.on_permission_request = self._on_permission_request
         state.on_status_changed = self._on_status_changed
-        state.on_external_message = self._on_external_message
-        state.on_external_participant_joined = self._on_external_participant_joined
+        state.permissions.on_permission_request = self._on_permission_request
+        state.router.on_external_message = self._on_external_message
+        state.router.on_external_participant_joined = self._on_external_participant_joined
 
         # Seed agents
-        claude = state.add_agent("claude", AgentType.CLAUDE)
-        codex = state.add_agent("codex", AgentType.CODEX)
-        gemini = state.add_agent("gemini", AgentType.GEMINI)
+        claude = await state.add_agent("claude", AgentType.CLAUDE)
+        codex = await state.add_agent("codex", AgentType.CODEX)
+        gemini = await state.add_agent("gemini", AgentType.GEMINI)
 
         # Add status indicators
         status_bar = self.query_one("#status-bar", Horizontal)
@@ -75,7 +76,7 @@ class PentaApp(App):
             status_bar.mount(indicator)
 
         # Load history
-        state.load_chat_history()
+        await state.load_chat_history()
         chat_room = self.query_one("#chat-room", ChatRoom)
         for msg in state.conversation:
             name, agent_type = self._sender_info(msg)
@@ -89,7 +90,9 @@ class PentaApp(App):
         )
 
         # Compact on startup
-        state.compact_history()
+        trimmed = await state.compact_history()
+        if trimmed:
+            self._last_rendered_index = len(state.conversation)
 
     async def on_unmount(self) -> None:
         if self._poll_task:
@@ -102,10 +105,10 @@ class PentaApp(App):
     def action_submit(self) -> None:
         self.query_one(InputBar).action_submit()
 
-    def on_input_bar_submitted(self, event: InputBar.Submitted) -> None:
+    async def on_input_bar_submitted(self, event: InputBar.Submitted) -> None:
         if not self._state:
             return
-        self._state.send_user_message(event.text.strip())
+        await self._state.send_user_message(event.text.strip())
         self._render_new_messages()
 
     # -- Permission handling --

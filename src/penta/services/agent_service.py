@@ -94,6 +94,7 @@ class CliAgentService(AgentService):
         self._agent_name = agent_name
         self._model = model
         self._current_process: asyncio.subprocess.Process | None = None
+        self._streaming = False
 
     # -- Abstract: subclasses must implement ---------------------------------
 
@@ -133,9 +134,15 @@ class CliAgentService(AgentService):
         system_prompt: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         await self.cancel()
+        if self._streaming:
+            raise RuntimeError(
+                f"{self._agent_name}: send() called while already streaming"
+            )
+        self._streaming = True
         self._reset_parse_state()
 
         if not self._executable:
+            self._streaming = False
             yield StreamEvent(
                 type=StreamEventType.ERROR,
                 error=f"{self._agent_name} CLI not found. "
@@ -181,6 +188,7 @@ class CliAgentService(AgentService):
                     await terminate_process(proc)
                 stderr_task.cancel()
                 self._current_process = None
+                self._streaming = False
 
         # Normal completion — wait for stderr and process exit.
         log.info("[%s] stdout stream ended", self._agent_name)
@@ -195,6 +203,7 @@ class CliAgentService(AgentService):
                 log.error("[%s] stderr: %s", self._agent_name, stderr_text)
                 yield StreamEvent(type=StreamEventType.ERROR, error=stderr_text)
 
+        self._streaming = False
         yield StreamEvent(type=StreamEventType.DONE)
 
     async def cancel(self) -> None:

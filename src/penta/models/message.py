@@ -18,15 +18,20 @@ class Message:
     is_error: bool = False
     is_cancelled: bool = False
     thinking_text: str = ""
-    _done: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
+    _done: asyncio.Event | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.is_streaming:
-            self._done.set()
+            self._ensure_done().set()
+
+    def _ensure_done(self) -> asyncio.Event:
+        if self._done is None:
+            self._done = asyncio.Event()
+        return self._done
 
     async def wait_for_completion(self) -> None:
-        await self._done.wait()
+        await self._ensure_done().wait()
 
     def mark_complete(self) -> None:
         self.is_streaming = False
-        self._done.set()
+        self._ensure_done().set()

@@ -28,9 +28,3 @@ class ChatRoom(VerticalScroll):
         self.mount(widget)
         self.scroll_end(animate=False)
         return widget
-
-    def get_message_widget(self, message_id: str) -> ChatMessage | None:
-        try:
-            return self.query_one(f"#msg-{message_id}", ChatMessage)
-        except Exception:
-            return None

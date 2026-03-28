@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 from enum import Enum
+from pathlib import Path
 
 
 class AgentType(Enum):
@@ -21,7 +22,7 @@ class AgentType(Enum):
     def find_executable(self) -> str | None:
         env_key = f"PENTA_{self.value.upper()}_PATH"
         override = os.environ.get(env_key)
-        if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        if override and Path(override).is_file() and os.access(override, os.X_OK):
             return override
         return shutil.which(self.value)
 
