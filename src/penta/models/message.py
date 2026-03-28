@@ -17,6 +17,7 @@ class Message:
     is_streaming: bool = False
     is_error: bool = False
     is_cancelled: bool = False
+    thinking_text: str = ""
     _done: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
 
     def __post_init__(self) -> None:

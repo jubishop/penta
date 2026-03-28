@@ -148,6 +148,7 @@ class PentaApp(App):
         if msg:
             widget = self._message_widgets.get(msg.id)
             if widget:
+                widget.thinking_text = msg.thinking_text
                 widget.body_text = msg.text
                 widget.is_streaming = msg.is_streaming
         chat_room = self.query_one("#chat-room", ChatRoom)
@@ -156,6 +157,7 @@ class PentaApp(App):
     def _apply_stream_complete(self, message: Message) -> None:
         widget = self._message_widgets.get(message.id)
         if widget:
+            widget.thinking_text = message.thinking_text
             widget.body_text = message.text
             widget.is_streaming = False
         if message.sender.is_agent and message.sender.agent_id:
