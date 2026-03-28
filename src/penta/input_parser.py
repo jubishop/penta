@@ -1,22 +1,9 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from uuid import UUID
 
 from penta.models import AgentConfig
-
-
-@dataclass(frozen=True)
-class ParsedChat:
-    text: str
-    mentioned_ids: set[UUID]
-
-
-def parse(raw: str, agents: list[AgentConfig]) -> ParsedChat:
-    trimmed = raw.strip()
-    mentioned = extract_mentions(trimmed, agents)
-    return ParsedChat(text=trimmed, mentioned_ids=mentioned)
 
 
 def extract_mentions(text: str, agents: list[AgentConfig]) -> set[UUID]:

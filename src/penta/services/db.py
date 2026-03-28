@@ -109,7 +109,13 @@ class PentaDB:
         """Background task: check for external writes every 500ms."""
         while True:
             await asyncio.sleep(0.5)
-            rows = self.check_external_changes()
+            try:
+                rows = self.check_external_changes()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "poll_external_messages: check failed, will retry"
+                )
+                continue
             if self._on_external_message:
                 for _, sender, text, _ in rows:
                     self._on_external_message(sender, text)

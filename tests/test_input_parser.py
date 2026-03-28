@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from penta.input_parser import ParsedChat, extract_mentions, parse
+from penta.input_parser import extract_mentions
 from penta.models import AgentConfig, AgentType
 
 
@@ -9,32 +9,6 @@ def _agents() -> list[AgentConfig]:
         AgentConfig(name="claude", type=AgentType.CLAUDE, id=uuid4()),
         AgentConfig(name="codex", type=AgentType.CODEX, id=uuid4()),
     ]
-
-
-class TestParse:
-    def test_chat_no_mentions(self):
-        agents = _agents()
-        result = parse("hello world", agents)
-        assert isinstance(result, ParsedChat)
-        assert result.text == "hello world"
-        assert result.mentioned_ids == set()
-
-    def test_chat_with_mention(self):
-        agents = _agents()
-        result = parse("@claude explain this", agents)
-        assert isinstance(result, ParsedChat)
-        assert result.mentioned_ids == {agents[0].id}
-
-    def test_chat_multiple_mentions(self):
-        agents = _agents()
-        result = parse("@claude @codex debate this", agents)
-        assert isinstance(result, ParsedChat)
-        assert result.mentioned_ids == {agents[0].id, agents[1].id}
-
-    def test_chat_strips_whitespace(self):
-        result = parse("  hello  ", [])
-        assert isinstance(result, ParsedChat)
-        assert result.text == "hello"
 
 
 class TestExtractMentions:

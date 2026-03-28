@@ -10,6 +10,8 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from penta.models.agent_type import AgentType
+from penta.models.message_sender import RESERVED_SENDER_NAMES
 from penta.services.db import PentaDB
 
 mcp = FastMCP("penta-group-chat")
@@ -32,16 +34,13 @@ def get_group_chat(directory: str, last_n: int = 50) -> str:
         db.close()
 
 
-_RESERVED_NAMES = {"user", "shell", "system", "claude", "codex", "gemini"}
-
-
 @mcp.tool()
 def send_to_group_chat(directory: str, message: str, your_name: str) -> str:
     """Post a message to the Penta group chat. All agents and the user can see it."""
     if not your_name or not your_name.strip():
         return "Error: your_name is required."
     name = your_name.strip()
-    if name.lower() in _RESERVED_NAMES:
+    if name.lower() in RESERVED_SENDER_NAMES | AgentType.all_names():
         name = f"{name} (external)"
     db = PentaDB(Path(directory))
     try:

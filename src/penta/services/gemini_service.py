@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import AsyncIterator
 
-from penta.models import AgentType
+from penta.models import GROUP_TAG_RE
 from penta.services.agent_service import CliAgentService, StreamEvent, StreamEventType
 
 log = logging.getLogger(__name__)
@@ -14,7 +13,6 @@ log = logging.getLogger(__name__)
 # field rather than using a JSON boolean.  Everything before the model's
 # actual response (tagged "[Group - <name>]:") is thinking.
 _THOUGHT_MARKER = "[Thought: true]"
-_GROUP_TAG_RE = re.compile(r"^\[Group - [^\]]+\]:\s*")
 
 
 class GeminiService(CliAgentService):
@@ -27,7 +25,7 @@ class GeminiService(CliAgentService):
     ) -> None:
         super().__init__(
             agent_name="Gemini",
-            executable=executable or AgentType.GEMINI.find_executable(),
+            executable=executable,
             model=model,
         )
         self._in_response = False
@@ -45,7 +43,7 @@ class GeminiService(CliAgentService):
         session_id: str | None,
         system_prompt: str | None,
     ) -> list[str]:
-        effective_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        effective_prompt = self._effective_prompt(prompt, system_prompt)
 
         args = ["--output-format", "stream-json", "--approval-mode", "yolo"]
 
@@ -93,7 +91,7 @@ class GeminiService(CliAgentService):
                         continue
 
                     # Check if this segment starts the actual response.
-                    m = _GROUP_TAG_RE.match(seg)
+                    m = GROUP_TAG_RE.match(seg)
                     if m:
                         self._in_response = True
                         response_text = seg[m.end():]

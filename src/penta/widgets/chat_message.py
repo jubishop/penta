@@ -42,7 +42,7 @@ class ChatMessage(Vertical):
     ChatMessage .sender-external {
         color: magenta;
     }
-    ChatMessage .message-body {
+    ChatMessage .message-body, ChatMessage .message-body-stream {
         padding: 0 0 0 2;
     }
     ChatMessage .thinking-text {
@@ -92,7 +92,20 @@ class ChatMessage(Vertical):
         thinking_widget = Static("", classes="thinking-text")
         thinking_widget.display = bool(self.thinking_text)
         yield thinking_widget
-        yield Markdown(self.body_text or ("..." if self.is_streaming else ""), classes="message-body")
+
+        # During streaming, use a cheap Static widget for text updates.
+        # On completion, swap to Markdown for rich rendering (one parse).
+        stream_body = Static(
+            self.body_text or "...", classes="message-body-stream",
+        )
+        stream_body.display = self.is_streaming
+        yield stream_body
+
+        md = Markdown(
+            self.body_text or "", classes="message-body",
+        )
+        md.display = not self.is_streaming
+        yield md
 
     def watch_thinking_text(self, value: str) -> None:
         try:
@@ -107,14 +120,27 @@ class ChatMessage(Vertical):
 
     def watch_body_text(self, value: str) -> None:
         try:
-            md = self.query_one(".message-body", Markdown)
-            display = value or ("..." if self.is_streaming else "")
-            md.update(display)
+            if self.is_streaming:
+                w = self.query_one(".message-body-stream", Static)
+                w.update(value or "...")
+            else:
+                md = self.query_one(".message-body", Markdown)
+                md.update(value or "")
         except Exception:
             log.debug("watch_body_text: widget not ready", exc_info=True)
 
     def watch_is_streaming(self, value: bool) -> None:
-        if not value and not self.body_text:
-            # Hide the entire widget when streaming ends with no content
-            # (e.g. cancelled responses).
-            self.display = False
+        if not value:
+            if not self.body_text:
+                # Hide the entire widget when streaming ends with no content
+                # (e.g. cancelled responses).
+                self.display = False
+                return
+            # Streaming finished — swap to rendered Markdown.
+            try:
+                self.query_one(".message-body-stream", Static).display = False
+                md = self.query_one(".message-body", Markdown)
+                md.update(self.body_text or "")
+                md.display = True
+            except Exception:
+                log.debug("watch_is_streaming: widget not ready", exc_info=True)

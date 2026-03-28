@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from typing import AsyncIterator
 
-from penta.models import AgentType
 from penta.services.agent_service import CliAgentService, StreamEvent, StreamEventType
 
 log = logging.getLogger(__name__)
@@ -19,7 +18,7 @@ class CodexService(CliAgentService):
     ) -> None:
         super().__init__(
             agent_name="Codex",
-            executable=executable or AgentType.CODEX.find_executable(),
+            executable=executable,
             model=model,
         )
 
@@ -29,7 +28,7 @@ class CodexService(CliAgentService):
         session_id: str | None,
         system_prompt: str | None,
     ) -> list[str]:
-        effective_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        effective_prompt = self._effective_prompt(prompt, system_prompt)
 
         # -a and -s are top-level codex flags; they must precede the
         # exec subcommand or exec-resume will reject them.

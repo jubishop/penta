@@ -24,3 +24,7 @@ class AgentType(Enum):
         if override and os.path.isfile(override) and os.access(override, os.X_OK):
             return override
         return shutil.which(self.value)
+
+    @classmethod
+    def all_names(cls) -> frozenset[str]:
+        return frozenset(t.value for t in cls)

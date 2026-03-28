@@ -14,13 +14,19 @@ from penta.models.agent_config import AgentConfig
 from penta.models.agent_status import AgentStatus
 from penta.models.agent_type import AgentType
 from penta.models.message import Message
-from penta.models.message_sender import MessageSender
+from penta.models.message_sender import RESERVED_SENDER_NAMES, MessageSender
 from penta.models.permission_request import PermissionRequest
 from penta.models.tagged_message import TaggedMessage
 from penta.services.db import PentaDB
 from penta.services.permission_server import PermissionServer
 
 log = logging.getLogger(__name__)
+
+
+def _log_task_error(task: asyncio.Task) -> None:
+    """Done-callback for fire-and-forget tasks — log exceptions."""
+    if not task.cancelled() and task.exception():
+        log.error("Background task failed", exc_info=task.exception())
 
 
 class RouteMode(Enum):
@@ -45,7 +51,7 @@ class AppState:
         self.on_text_delta: Callable[[UUID, str], None] | None = None
         self.on_stream_complete: Callable[[Message, UUID], None] | None = None
         self.on_permission_request: Callable[[PermissionRequest], None] | None = None
-        self.on_status_changed: Callable[[UUID, object], None] | None = None
+        self.on_status_changed: Callable[[UUID, AgentStatus], None] | None = None
         self.on_external_message: Callable[[str, str], None] | None = None
         self.on_external_participant_joined: Callable[[str], None] | None = None
 
@@ -58,7 +64,8 @@ class AppState:
         self, name: str, agent_type: AgentType, model: str | None = None,
     ) -> AgentConfig:
         config = AgentConfig(name=name, type=agent_type, model=model)
-        if not agent_type.find_executable():
+        executable = agent_type.find_executable()
+        if not executable:
             config.status = AgentStatus.DISCONNECTED
             log.warning("Agent %s: executable not found, marked DISCONNECTED", name)
         self.agents.append(config)
@@ -68,6 +75,7 @@ class AppState:
             config=config,
             working_dir=self.directory,
             db=self.db,
+            executable=executable,
             permission_server=self.permission_server,
             other_agent_names=other_names,
         )
@@ -75,7 +83,6 @@ class AppState:
         # Wire callbacks through to TUI
         coordinator.on_text_delta = self._relay_text_delta
         coordinator.on_stream_complete = self._relay_stream_complete
-        coordinator.on_permission_request = self._relay_permission_request
         coordinator.on_status_changed = self._relay_status_changed
 
         self.coordinators[config.id] = coordinator
@@ -114,12 +121,10 @@ class AppState:
             mode=RouteMode.ALL_IF_NO_MENTIONS,
         )
 
-    _RESERVED_NAMES = {"user", "shell", "system"}
-
     def receive_external_message(self, sender_name: str, text: str) -> None:
         # External writers may not impersonate built-in agents or reserved
         # names — always treat them as external senders.
-        if self.agent_by_name(sender_name) or sender_name.lower() in self._RESERVED_NAMES:
+        if self.agent_by_name(sender_name) or sender_name.lower() in RESERVED_SENDER_NAMES:
             sender_name = f"{sender_name} (external)"
 
         msg_sender = MessageSender.external(sender_name)
@@ -240,7 +245,10 @@ class AppState:
 
             if agent.id in responding:
                 msg = coord.send(tagged, self.conversation)
-                asyncio.create_task(self._await_completion(msg, agent.id, hops))
+                task = asyncio.create_task(
+                    self._await_completion(msg, agent.id, hops)
+                )
+                task.add_done_callback(_log_task_error)
             else:
                 coord.inject_context(tagged)
 
@@ -270,7 +278,10 @@ class AppState:
         claude_agent = next(
             (a for a in self.agents if a.type == AgentType.CLAUDE), None
         )
-        agent_id = claude_agent.id if claude_agent else self.agents[0].id
+        if not claude_agent:
+            log.error("Permission request but no Claude agent registered")
+            return
+        agent_id = claude_agent.id
         request = PermissionRequest(
             id=tool_use_id,
             agent_id=agent_id,
@@ -305,11 +316,6 @@ class AppState:
         if self.on_stream_complete:
             self.on_stream_complete(message, agent_id)
 
-    def _relay_permission_request(self, request: PermissionRequest) -> None:
-        self.pending_permissions.append(request)
-        if self.on_permission_request:
-            self.on_permission_request(request)
-
-    def _relay_status_changed(self, agent_id: UUID, status: object) -> None:
+    def _relay_status_changed(self, agent_id: UUID, status: AgentStatus) -> None:
         if self.on_status_changed:
             self.on_status_changed(agent_id, status)

@@ -5,6 +5,9 @@ from enum import Enum
 from uuid import UUID
 
 
+RESERVED_SENDER_NAMES = frozenset({"user", "shell", "system"})
+
+
 class MessageSenderKind(Enum):
     USER = "user"
     AGENT = "agent"
