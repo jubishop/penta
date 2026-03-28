@@ -115,8 +115,6 @@ class ChatMessage(Vertical):
 
     def watch_is_streaming(self, value: bool) -> None:
         if not value and not self.body_text:
-            try:
-                md = self.query_one(".message-body", Markdown)
-                md.update(self.body_text or "")
-            except Exception:
-                log.debug("watch_is_streaming: widget not ready", exc_info=True)
+            # Hide the entire widget when streaming ends with no content
+            # (e.g. cancelled responses).
+            self.display = False
