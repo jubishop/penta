@@ -13,6 +13,7 @@ class AgentConfig:
     type: AgentType
     id: UUID = field(default_factory=uuid4)
     status: AgentStatus = AgentStatus.IDLE
+    model: str | None = None
 
     @property
     def mention_handle(self) -> str:

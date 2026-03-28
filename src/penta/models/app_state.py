@@ -54,8 +54,10 @@ class AppState:
         self.permission_server.set_request_callback(self._on_http_permission_request)
         self.permission_server.start()
 
-    def add_agent(self, name: str, agent_type: AgentType) -> AgentConfig:
-        config = AgentConfig(name=name, type=agent_type)
+    def add_agent(
+        self, name: str, agent_type: AgentType, model: str | None = None,
+    ) -> AgentConfig:
+        config = AgentConfig(name=name, type=agent_type, model=model)
         if not agent_type.find_executable():
             config.status = AgentStatus.DISCONNECTED
             log.warning("Agent %s: executable not found, marked DISCONNECTED", name)

@@ -74,21 +74,21 @@ class AgentCoordinator:
         conversation.append(response)
         self._set_status(AgentStatus.PROCESSING)
 
+        system_prompt = self._get_system_prompt()
         prompt = self._build_prompt(tagged)
         self._current_task = asyncio.create_task(
-            self._stream_response(prompt, response)
+            self._stream_response(prompt, response, system_prompt)
         )
         return response
 
     def resolve_permission(self, request_id: str, granted: bool) -> None:
-        """Resolve a pending permission request through the appropriate channel."""
-        if self.config.type == AgentType.CLAUDE:
-            if self._permission_server:
-                self._permission_server.resolve_permission(request_id, granted)
-        else:
-            asyncio.create_task(
-                self.service.respond_to_permission(request_id, granted)
-            )
+        """Resolve a pending permission request via the HTTP bridge.
+
+        Only Claude uses interactive permissions (via PermissionServer).
+        Codex and Gemini auto-approve all tool use at the CLI level.
+        """
+        if self._permission_server:
+            self._permission_server.resolve_permission(request_id, granted)
 
     def cancel(self) -> None:
         if self._current_task and not self._current_task.done():
@@ -101,12 +101,14 @@ class AgentCoordinator:
 
     # -- Prompt construction --
 
+    def _get_system_prompt(self) -> str | None:
+        """Return identity preamble on first turn, None on subsequent turns."""
+        if self.session_id is None:
+            return self._identity_preamble()
+        return None
+
     def _build_prompt(self, current: TaggedMessage) -> str:
         parts: list[str] = []
-
-        if self.session_id is None:
-            parts.append(self._identity_preamble())
-            parts.append("")
 
         # Catch-up: messages since last prompt (excluding current, which is last)
         missed = self.full_history[self.last_prompted_index:-1]
@@ -132,12 +134,14 @@ class AgentCoordinator:
 
     # -- Streaming --
 
-    async def _stream_response(self, prompt: str, response: Message) -> None:
+    async def _stream_response(
+        self, prompt: str, response: Message, system_prompt: str | None,
+    ) -> None:
         received_text = False
 
         try:
             async for event in self.service.send(
-                prompt, self.session_id, self._working_dir
+                prompt, self.session_id, self._working_dir, system_prompt,
             ):
                 match event.type:
                     case StreamEventType.SESSION_STARTED:
@@ -164,15 +168,16 @@ class AgentCoordinator:
                         received_text = True
                         self._set_status(AgentStatus.PROCESSING)
 
-                    case StreamEventType.PERMISSION_REQUESTED:
-                        self._set_status(AgentStatus.AWAITING_PERMISSION)
-                        if self.on_permission_request:
-                            self.on_permission_request(PermissionRequest(
-                                id=event.request_id or "",
-                                agent_id=self.config.id,
-                                tool_name=event.tool_name or "unknown",
-                                tool_input=event.tool_input or "",
-                            ))
+                    case StreamEventType.THINKING:
+                        log.debug(
+                            "[%s] Thinking: %s",
+                            self.config.name, (event.text or "")[:100],
+                        )
+
+                    case StreamEventType.WARNING:
+                        log.warning(
+                            "[%s] %s", self.config.name, event.error,
+                        )
 
                     case StreamEventType.ERROR:
                         if response.text:
@@ -180,6 +185,11 @@ class AgentCoordinator:
                         else:
                             response.text = event.error or "Unknown error"
                         response.is_error = True
+
+                    case StreamEventType.USAGE:
+                        log.info(
+                            "[%s] Usage: %s", self.config.name, event.usage
+                        )
 
                     case StreamEventType.DONE:
                         break
@@ -228,13 +238,16 @@ class AgentCoordinator:
         if self.config.type == AgentType.CLAUDE:
             return ClaudeService(
                 executable=self.config.type.find_executable(),
+                model=self.config.model,
                 permission_server=self._permission_server,
             )
         elif self.config.type == AgentType.GEMINI:
             return GeminiService(
                 executable=self.config.type.find_executable(),
+                model=self.config.model,
             )
         else:
             return CodexService(
                 executable=self.config.type.find_executable(),
+                model=self.config.model,
             )

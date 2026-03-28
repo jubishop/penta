@@ -22,14 +22,12 @@ class HangingService(AgentService):
     """Yields one text delta then blocks forever (until cancelled)."""
 
     async def send(
-        self, prompt: str, session_id: str | None, working_dir: Path
+        self, prompt: str, session_id: str | None, working_dir: Path,
+        system_prompt: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="partial")
         # Block indefinitely so the caller can cancel us.
         await asyncio.Event().wait()
-
-    async def respond_to_permission(self, request_id: str, granted: bool) -> None:
-        pass
 
     async def cancel(self) -> None:
         pass
@@ -205,12 +203,9 @@ class TestServiceFailureDoesNotWedgeUI:
     @pytest.mark.asyncio
     async def test_exception_marks_complete_and_fires_callback(self, db: PentaDB):
         class ExplodingService(AgentService):
-            async def send(self, prompt, session_id, working_dir):
+            async def send(self, prompt, session_id, working_dir, system_prompt=None):
                 yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="partial")
                 raise ConnectionResetError("boom")
-
-            async def respond_to_permission(self, request_id, granted):
-                pass
 
             async def cancel(self):
                 pass

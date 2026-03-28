@@ -1,145 +1,155 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-from pathlib import Path
 from typing import AsyncIterator
 
 from penta.models import AgentType
-from penta.services.agent_service import AgentService, StreamEvent, StreamEventType, terminate_process
-from penta.services.cli_env import build_cli_env
-from penta.services.stream_parser import async_lines
+from penta.services.agent_service import CliAgentService, StreamEvent, StreamEventType
 
 log = logging.getLogger(__name__)
 
 
-class CodexService(AgentService):
-    """Codex CLI agent — spawn-per-turn with JSON Lines output."""
+class CodexService(CliAgentService):
+    """Codex CLI agent — thin wrapper over CliAgentService."""
 
-    def __init__(self, executable: str | None = None) -> None:
-        self._executable = executable or AgentType.CODEX.find_executable()
-        self._current_process: asyncio.subprocess.Process | None = None
-
-    async def send(
-        self, prompt: str, session_id: str | None, working_dir: Path
-    ) -> AsyncIterator[StreamEvent]:
-        await self.cancel()
-
-        if not self._executable:
-            yield StreamEvent(
-                type=StreamEventType.ERROR,
-                error="Codex CLI not found. Set PENTA_CODEX_PATH or install codex.",
-            )
-            yield StreamEvent(type=StreamEventType.DONE)
-            return
-
-        args = self._build_args(prompt, session_id)
-
-        log.info("[Codex] Launching: %s %s", self._executable, " ".join(args))
-        log.info("[Codex] cwd: %s", working_dir)
-
-        proc = await asyncio.create_subprocess_exec(
-            self._executable,
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=working_dir,
-            env=build_cli_env(),
-        )
-        self._current_process = proc
-
-        # Read stderr concurrently so it doesn't block
-        stderr_task = asyncio.create_task(proc.stderr.read())
-
-        async for line in async_lines(proc.stdout):
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            event_type = data.get("type", "")
-
-            if event_type == "thread.started":
-                thread_id = data.get("thread_id", "")
-                if thread_id:
-                    log.info("[Codex] Session started: %s", thread_id)
-                    yield StreamEvent(
-                        type=StreamEventType.SESSION_STARTED,
-                        session_id=thread_id,
-                    )
-
-            elif event_type == "item.started":
-                item = data.get("item", {})
-                item_type = item.get("type", "")
-                if item_type == "command_execution":
-                    command = item.get("command", "")
-                    tool_id = item.get("id", "")
-                    yield StreamEvent(
-                        type=StreamEventType.TOOL_USE_STARTED,
-                        tool_id=tool_id,
-                        tool_name=command,
-                    )
-
-            elif event_type == "item.completed":
-                item = data.get("item", {})
-                item_type = item.get("type", "")
-                if item_type == "agent_message":
-                    text = item.get("text", "")
-                    if text:
-                        yield StreamEvent(
-                            type=StreamEventType.TEXT_COMPLETE, text=text,
-                        )
-
-            elif event_type == "error":
-                message = data.get("message", "Unknown error")
-                log.error("[Codex] Error: %s", message)
-                yield StreamEvent(
-                    type=StreamEventType.ERROR, error=message,
-                )
-
-        log.info("[Codex] stdout stream ended")
-
-        # Wait for stderr and process exit
-        stderr_data = await stderr_task
-        returncode = await proc.wait()
-        self._current_process = None
-
-        if returncode != 0 and stderr_data:
-            stderr_text = stderr_data.decode("utf-8", errors="replace").strip()
-            if stderr_text:
-                log.error("[Codex] stderr: %s", stderr_text)
-                yield StreamEvent(
-                    type=StreamEventType.ERROR, error=stderr_text,
-                )
-
-        yield StreamEvent(type=StreamEventType.DONE)
-
-    async def respond_to_permission(
-        self, request_id: str, granted: bool
+    def __init__(
+        self,
+        executable: str | None = None,
+        model: str | None = None,
     ) -> None:
-        # Codex runs with --full-auto, no permission flow
-        pass
+        super().__init__(
+            agent_name="Codex",
+            executable=executable or AgentType.CODEX.find_executable(),
+            model=model,
+        )
 
-    async def cancel(self) -> None:
-        proc = self._current_process
-        self._current_process = None
-        if proc:
-            log.info("[Codex] Cancelling process pid=%d", proc.pid)
-            await terminate_process(proc)
+    def _build_args(
+        self,
+        prompt: str,
+        session_id: str | None,
+        system_prompt: str | None,
+    ) -> list[str]:
+        effective_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
 
-    async def shutdown(self) -> None:
-        await self.cancel()
-
-    def _build_args(self, prompt: str, session_id: str | None) -> list[str]:
         if session_id:
-            return [
-                "exec", "resume", session_id,
-                "--json", "--full-auto",
-                prompt,
-            ]
-        return [
-            "exec",
-            "--json", "--full-auto",
-            prompt,
+            args = ["exec", "resume", session_id]
+        else:
+            args = ["exec"]
+
+        if self._model:
+            args += ["--model", self._model]
+
+        args += [
+            "--json",
+            "-a", "never",
+            "-s", "workspace-write",
+            "--skip-git-repo-check",
+            effective_prompt,
         ]
+        return args
+
+    async def _parse_line(self, data: dict) -> AsyncIterator[StreamEvent]:
+        event_type = data.get("type", "")
+
+        if event_type == "thread.started":
+            thread_id = data.get("thread_id", "")
+            if thread_id:
+                log.info("[Codex] Session started: %s", thread_id)
+                yield StreamEvent(
+                    type=StreamEventType.SESSION_STARTED, session_id=thread_id,
+                )
+
+        elif event_type == "item.started":
+            item = data.get("item", {})
+            item_type = item.get("type", "")
+            if item_type == "command_execution":
+                yield StreamEvent(
+                    type=StreamEventType.TOOL_USE_STARTED,
+                    tool_id=item.get("id", ""),
+                    tool_name=item.get("command", ""),
+                )
+            elif item_type == "file_change":
+                changes = item.get("changes", [])
+                summary = ", ".join(
+                    f"{c.get('kind', '?')} {c.get('path', '?')}" for c in changes
+                ) or "file changes"
+                yield StreamEvent(
+                    type=StreamEventType.TOOL_USE_STARTED,
+                    tool_id=item.get("id", ""),
+                    tool_name=summary,
+                )
+            elif item_type == "mcp_tool_call":
+                server = item.get("server", "")
+                tool = item.get("tool", "")
+                yield StreamEvent(
+                    type=StreamEventType.TOOL_USE_STARTED,
+                    tool_id=item.get("id", ""),
+                    tool_name=f"{server}:{tool}" if server else tool,
+                )
+            elif item_type == "web_search":
+                query = item.get("query", "web search")
+                yield StreamEvent(
+                    type=StreamEventType.TOOL_USE_STARTED,
+                    tool_id=item.get("id", ""),
+                    tool_name=f"web_search: {query}",
+                )
+
+        elif event_type == "item.completed":
+            item = data.get("item", {})
+            item_type = item.get("type", "")
+            if item_type == "agent_message":
+                text = item.get("text", "")
+                if text:
+                    yield StreamEvent(
+                        type=StreamEventType.TEXT_COMPLETE, text=text,
+                    )
+            elif item_type == "reasoning":
+                text = item.get("text", "")
+                if text:
+                    yield StreamEvent(
+                        type=StreamEventType.THINKING, text=text,
+                    )
+            elif item_type == "command_execution":
+                exit_code = item.get("exit_code")
+                output = item.get("aggregated_output", "")
+                if exit_code and exit_code != 0 and output:
+                    # Surface failed command output as a warning
+                    log.warning(
+                        "[Codex] Command failed (exit %d): %s",
+                        exit_code, output[:200],
+                    )
+            elif item_type == "todo_list":
+                items = item.get("items", [])
+                if items:
+                    lines = []
+                    for t in items:
+                        check = "x" if t.get("completed") else " "
+                        lines.append(f"  [{check}] {t.get('text', '')}")
+                    yield StreamEvent(
+                        type=StreamEventType.TEXT_DELTA,
+                        text="\n".join(lines) + "\n",
+                    )
+
+        elif event_type == "turn.completed":
+            usage = data.get("usage")
+            if usage:
+                yield StreamEvent(
+                    type=StreamEventType.USAGE, usage=usage,
+                )
+
+        elif event_type == "turn.failed":
+            error = data.get("error", {})
+            message = error.get("message") if isinstance(error, dict) else str(error)
+            if not message:
+                message = data.get("message", "Turn failed")
+            log.error("[Codex] Turn failed: %s", message)
+            yield StreamEvent(
+                type=StreamEventType.ERROR, error=str(message),
+            )
+
+        elif event_type == "error":
+            message = data.get("message", "Unknown error")
+            log.error("[Codex] Error: %s", message)
+            yield StreamEvent(
+                type=StreamEventType.ERROR, error=message,
+            )
