@@ -94,7 +94,7 @@ class TestUserMessageRouting:
     ):
         claude = _make_agent("claude", AgentType.CLAUDE)
         codex = _make_agent("codex", AgentType.CODEX)
-        disconnected = _make_agent("gemini", AgentType.GEMINI, AgentStatus.DISCONNECTED)
+        disconnected = _make_agent("offline", AgentType.CODEX, AgentStatus.DISCONNECTED)
 
         claude_coord = _register(agents, coordinators, claude)
         codex_coord = _register(agents, coordinators, codex)

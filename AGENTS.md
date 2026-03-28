@@ -1,6 +1,6 @@
 # Penta
 
-Multi-agent group chat TUI — Claude, Codex, and Gemini in one terminal conversation.
+Multi-agent group chat TUI — Claude and Codex in one terminal conversation.
 
 ## Stack
 

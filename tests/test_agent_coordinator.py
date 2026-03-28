@@ -210,7 +210,7 @@ class TestCancelledStreamRollsBackPromptIndex:
     async def test_cancelled_send_does_not_skip_messages(
         self, coordinator: AgentCoordinator
     ):
-        """Simulate: user message (hop 0) → agent responds → Codex and Gemini
+        """Simulate: user message (hop 0) → agent responds → two agents
         both mention this agent nearly simultaneously.  The second send()
         cancels the first, but the replacement prompt must still contain the
         first agent's message."""
@@ -229,20 +229,20 @@ class TestCancelledStreamRollsBackPromptIndex:
 
         # Now two agents finish nearly simultaneously and both mention us.
         codex_msg = TaggedMessage(sender_label="codex", text="@test-agent here's my take")
-        gemini_msg = TaggedMessage(sender_label="gemini", text="@test-agent I agree")
+        other_msg = TaggedMessage(sender_label="other", text="@test-agent I agree")
 
         # First send: Codex's message arrives.
         resp1 = coordinator.send(codex_msg, conversation)
         await asyncio.sleep(0.05)  # Let stream start
 
-        # Second send: Gemini's message arrives, cancelling Codex's stream.
-        resp2 = coordinator.send(gemini_msg, conversation)
+        # Second send: other agent's message arrives, cancelling Codex's stream.
+        resp2 = coordinator.send(other_msg, conversation)
         await asyncio.sleep(0.05)
 
         # The cancelled response must be flagged.
         assert resp1.is_cancelled is True
 
-        # Critical assertion: the prompt that was built for the Gemini send
+        # Critical assertion: the prompt that was built for the second send
         # must include Codex's message in the catch-up section.
         # We can verify by checking the prompt that was passed to the service.
         # Rebuild what _build_prompt would have produced for the second send:
@@ -260,7 +260,7 @@ class TestCancelledStreamRollsBackPromptIndex:
         coordinator.full_history.append(check_msg)
         check_prompt = coordinator._build_prompt(check_msg)
 
-        # If the fix works, Codex's message was included in the Gemini prompt,
+        # If the fix works, Codex's message was included in the second prompt,
         # so it should NOT appear in this follow-up prompt.
         assert "@test-agent here's my take" not in check_prompt
         assert "@test-agent I agree" not in check_prompt
@@ -281,14 +281,14 @@ class TestCancelledStreamRollsBackPromptIndex:
 
         # Two agents respond simultaneously.
         codex_msg = TaggedMessage(sender_label="codex", text="@test-agent Codex here")
-        gemini_msg = TaggedMessage(sender_label="gemini", text="@test-agent Gemini here")
+        other_msg = TaggedMessage(sender_label="other", text="@test-agent Other here")
 
         # First send (Codex) — starts streaming.
         coordinator.send(codex_msg, conversation)
         await asyncio.sleep(0.05)
 
         # Capture prompt index before second send.
-        # Second send (Gemini) — cancels the first.
+        # Second send (other) — cancels the first.
         # We need to capture the prompt.  Monkey-patch _build_prompt to record it.
         prompts: list[str] = []
         original_build = coordinator._build_prompt
@@ -299,7 +299,7 @@ class TestCancelledStreamRollsBackPromptIndex:
             return result
 
         coordinator._build_prompt = capturing_build  # type: ignore[assignment]
-        coordinator.send(gemini_msg, conversation)
+        coordinator.send(other_msg, conversation)
         await asyncio.sleep(0.05)
 
         assert len(prompts) == 1
@@ -310,8 +310,8 @@ class TestCancelledStreamRollsBackPromptIndex:
             "Codex's message was lost — the cancelled stream advanced "
             "last_prompted_index past it"
         )
-        # And the current message (Gemini) must be there too.
-        assert "Gemini here" in replacement_prompt
+        # And the current message must be there too.
+        assert "Other here" in replacement_prompt
 
         coordinator._current_task.cancel()
         await asyncio.sleep(0.05)

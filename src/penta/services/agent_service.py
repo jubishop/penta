@@ -58,7 +58,7 @@ class AgentService(ABC):
 
     Permission handling is intentionally NOT part of this interface.
     Claude uses an out-of-band HTTP hook bridge (PermissionServer);
-    Codex and Gemini auto-approve all tool use.  The coordinator and
+    Codex auto-approves all tool use.  The coordinator and
     AppState handle permission resolution directly.
     """
 

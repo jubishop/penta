@@ -33,7 +33,7 @@ Rotating backups exist as `.log.1`, `.log.2`, `.log.3` (newest to oldest). Max 5
 Each line follows:
 
 ```
-2026-03-27 19:30:15,123 DEBUG    penta.services.agent_service: [Gemini] raw: {"type":"message","role":"assistant",...}
+2026-03-27 19:30:15,123 DEBUG    penta.services.agent_service: [Claude] raw: {"type":"message","role":"assistant",...}
 ```
 
 Fields: `timestamp  level  logger_name: message`
@@ -43,10 +43,6 @@ Fields: `timestamp  level  logger_name: message`
 ### Raw agent JSON (most useful for debugging)
 
 Every JSON line from agent CLIs is logged at DEBUG level with the pattern `[AgentName] raw:`. To extract raw JSON from a specific agent:
-
-```bash
-grep '\[Gemini\] raw:' penta.log | tail -50
-```
 
 ```bash
 grep '\[Claude\] raw:' penta.log | tail -50
@@ -70,7 +66,7 @@ grep -E '(ERROR|WARNING)' penta.log | tail -30
 grep -E 'Session (started|resumed)|Launching|stdout stream ended' penta.log
 ```
 
-### Thinking events (Gemini/Claude)
+### Thinking events (Claude)
 
 ```bash
 grep 'Thinking:' penta.log | tail -20
@@ -87,11 +83,6 @@ awk '$1 " " $2 >= "2026-03-27 19:25:00"' penta.log
 
 ## Common debugging workflows
 
-**"Gemini thinking shows up wrong"** — Check the raw JSON to see if `thought` is a JSON field or literal text in `content`:
-```bash
-grep '\[Gemini\] raw:' penta.log | grep -i thought | tail -20
-```
-
 **"Agent didn't respond"** — Check if the process launched, if there were errors, and if stdout ended:
 ```bash
 grep -E '\[AgentName\] (Launching|Error|stderr|stdout stream ended)' penta.log
@@ -100,7 +91,7 @@ grep -E '\[AgentName\] (Launching|Error|stderr|stdout stream ended)' penta.log
 **"Message content looks wrong"** — Compare raw JSON (what the CLI sent) against what ended up in the DB:
 ```bash
 # Raw from CLI
-grep '\[Gemini\] raw:.*"type":"message"' penta.log | tail -10
+grep '\[Claude\] raw:.*"type":"message"' penta.log | tail -10
 # What was saved
 sqlite3 ~/.local/share/penta/chats/<hash>/penta.db "SELECT substr(text,1,200) FROM messages ORDER BY id DESC LIMIT 5;"
 ```
@@ -110,7 +101,7 @@ sqlite3 ~/.local/share/penta/chats/<hash>/penta.db "SELECT substr(text,1,200) FR
 `/logs` accepts an optional argument to filter:
 
 - `/logs` — show the log path and recent errors/warnings
-- `/logs <agent>` — show recent raw JSON from that agent (e.g., `/logs gemini`)
+- `/logs <agent>` — show recent raw JSON from that agent (e.g., `/logs claude`)
 - `/logs errors` — show recent errors and warnings
 - `/logs raw` — show the last 50 raw JSON lines from all agents
 - `/logs path` — just print the log file path
