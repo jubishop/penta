@@ -6,6 +6,8 @@ Installed as `penta-mcp-server` entry point.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,26 +16,47 @@ from mcp.server.fastmcp import FastMCP
 
 from penta.models.agent_type import AgentType
 from penta.models.message_sender import sanitize_external_name
-from penta.services.db import CREATE_TABLES_SQL, PentaDB
 
 mcp = FastMCP("penta-group-chat")
+
+_CREATE_TABLES_SQL = """
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender TEXT NOT NULL,
+        text TEXT NOT NULL,
+        timestamp TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+        agent_name TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL
+    );
+"""
+
+
+def _db_path_for(directory: str) -> Path:
+    """Locate the DB file for a project directory (mirrors PentaDB.db_path_for)."""
+    resolved = Path(directory).resolve()
+    override = os.environ.get("PENTA_DATA_DIR")
+    root = Path(override) if override else Path.home() / ".local" / "share"
+    dir_hash = hashlib.sha256(str(resolved).encode()).hexdigest()
+    return root / "penta" / "chats" / dir_hash / "penta.db"
 
 
 def _open_db(directory: str) -> sqlite3.Connection:
     """Open a sync sqlite3 connection for the given project directory."""
-    path = PentaDB.db_path_for(Path(directory))
+    path = _db_path_for(directory)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.executescript(CREATE_TABLES_SQL)
+    conn.executescript(_CREATE_TABLES_SQL)
     return conn
 
 
 @mcp.tool()
 def get_group_chat(directory: str, last_n: int = 50) -> str:
     """Get recent messages from the Penta group chat for the given project directory."""
-    path = PentaDB.db_path_for(Path(directory))
+    path = _db_path_for(directory)
     if not path.exists():
         return f"No group chat messages yet for {directory}."
 
