@@ -19,7 +19,9 @@ class TestCodexArgBuilding:
         args = service._build_args("hello world", session_id=None, system_prompt=None)
         assert args == [
             "exec",
-            "--json", "--dangerously-bypass-approvals-and-sandbox",
+            "--json",
+            "-a", "never",
+            "-s", "workspace-write",
             "--skip-git-repo-check",
             "hello world",
         ]
@@ -29,7 +31,9 @@ class TestCodexArgBuilding:
         args = service._build_args("follow up", session_id="thread-123", system_prompt=None)
         assert args == [
             "exec", "resume", "thread-123",
-            "--json", "--dangerously-bypass-approvals-and-sandbox",
+            "--json",
+            "-a", "never",
+            "-s", "workspace-write",
             "--skip-git-repo-check",
             "follow up",
         ]

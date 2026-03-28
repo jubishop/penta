@@ -41,7 +41,8 @@ class CodexService(CliAgentService):
 
         args += [
             "--json",
-            "--dangerously-bypass-approvals-and-sandbox",
+            "-a", "never",
+            "-s", "workspace-write",
             "--skip-git-repo-check",
             effective_prompt,
         ]
