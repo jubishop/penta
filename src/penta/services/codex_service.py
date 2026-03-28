@@ -89,11 +89,12 @@ class CodexService(CliAgentService):
                     tool_name=f"{server}:{tool}" if server else tool,
                 )
             elif item_type == "web_search":
-                query = item.get("query", "web search")
+                query = item.get("query", "")
+                label = f"web_search: {query}" if query else "web_search"
                 yield StreamEvent(
                     type=StreamEventType.TOOL_USE_STARTED,
                     tool_id=item.get("id", ""),
-                    tool_name=f"web_search: {query}",
+                    tool_name=label,
                 )
 
         elif event_type == "item.completed":
@@ -110,6 +111,13 @@ class CodexService(CliAgentService):
                 if text:
                     yield StreamEvent(
                         type=StreamEventType.THINKING, text=text,
+                    )
+            elif item_type == "web_search":
+                query = item.get("query", "")
+                if query:
+                    yield StreamEvent(
+                        type=StreamEventType.THINKING,
+                        text=f"> Searched: {query}\n",
                     )
             elif item_type == "command_execution":
                 exit_code = item.get("exit_code")
