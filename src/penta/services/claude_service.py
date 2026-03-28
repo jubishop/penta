@@ -1,174 +1,44 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-from pathlib import Path
 from typing import AsyncIterator
 
 from penta.models import AgentType
-from penta.services.agent_service import AgentService, StreamEvent, StreamEventType, terminate_process
-from penta.services.cli_env import build_cli_env
+from penta.services.agent_service import CliAgentService, StreamEvent, StreamEventType
 from penta.services.permission_server import PermissionServer
-from penta.services.stream_parser import async_lines
 
 log = logging.getLogger(__name__)
 
 
-class ClaudeService(AgentService):
+class ClaudeService(CliAgentService):
+    """Claude CLI agent — thin wrapper over CliAgentService."""
+
     def __init__(
         self,
         executable: str | None = None,
+        model: str | None = None,
         permission_server: PermissionServer | None = None,
     ) -> None:
-        self._executable = executable or AgentType.CLAUDE.find_executable()
-        self._permission_server = permission_server
-        self._current_process: asyncio.subprocess.Process | None = None
-
-    async def send(
-        self, prompt: str, session_id: str | None, working_dir: Path
-    ) -> AsyncIterator[StreamEvent]:
-        await self.cancel()
-
-        if not self._executable:
-            yield StreamEvent(
-                type=StreamEventType.ERROR,
-                error="Claude CLI not found. Set PENTA_CLAUDE_PATH or install claude.",
-            )
-            yield StreamEvent(type=StreamEventType.DONE)
-            return
-
-        args = self._build_args(prompt, session_id)
-        env = self._build_env()
-
-        log.info("[Claude] Launching: %s %s", self._executable, " ".join(args))
-        log.info("[Claude] cwd: %s", working_dir)
-
-        proc = await asyncio.create_subprocess_exec(
-            self._executable,
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=working_dir,
-            env=env,
+        super().__init__(
+            agent_name="Claude",
+            executable=executable or AgentType.CLAUDE.find_executable(),
+            model=model,
         )
-        self._current_process = proc
+        self._permission_server = permission_server
 
-        # Read stderr concurrently so it doesn't block
-        stderr_task = asyncio.create_task(proc.stderr.read())
+    def _build_args(
+        self,
+        prompt: str,
+        session_id: str | None,
+        system_prompt: str | None,
+    ) -> list[str]:
+        args = ["-p", "--verbose", "--output-format", "stream-json"]
 
-        captured_session_id: str | None = None
-        received_text = False
+        if self._model:
+            args += ["--model", self._model]
 
-        async for line in async_lines(proc.stdout):
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            msg_type = data.get("type")
-
-            if msg_type == "system":
-                if data.get("subtype") == "init":
-                    sid = data.get("session_id")
-                    if sid:
-                        captured_session_id = sid
-                        log.info("[Claude] Session started: %s", sid)
-                        yield StreamEvent(
-                            type=StreamEventType.SESSION_STARTED,
-                            session_id=sid,
-                        )
-
-            elif msg_type == "stream_event":
-                event = data.get("event", {})
-                event_type = event.get("type")
-
-                if event_type == "content_block_start":
-                    content_block = event.get("content_block", {})
-                    if content_block.get("type") == "tool_use":
-                        tool_id = content_block.get("id", "")
-                        tool_name = content_block.get("name", "")
-                        yield StreamEvent(
-                            type=StreamEventType.TOOL_USE_STARTED,
-                            tool_id=tool_id,
-                            tool_name=tool_name,
-                        )
-                    if received_text:
-                        yield StreamEvent(
-                            type=StreamEventType.TEXT_DELTA, text="\n\n"
-                        )
-
-                elif event_type == "content_block_delta":
-                    delta = event.get("delta", {})
-                    if delta.get("type") == "text_delta":
-                        text = delta.get("text", "")
-                        if text:
-                            received_text = True
-                            yield StreamEvent(
-                                type=StreamEventType.TEXT_DELTA, text=text
-                            )
-
-            elif msg_type == "result":
-                result_text = data.get("result", "")
-                if data.get("is_error"):
-                    log.error("[Claude] API error: %s", result_text)
-                    yield StreamEvent(
-                        type=StreamEventType.ERROR, error=result_text
-                    )
-                elif result_text:
-                    log.info("[Claude] Result received, len=%d", len(result_text))
-                    yield StreamEvent(
-                        type=StreamEventType.TEXT_COMPLETE, text=result_text
-                    )
-
-                sid = data.get("session_id")
-                if sid and not captured_session_id:
-                    captured_session_id = sid
-                    yield StreamEvent(
-                        type=StreamEventType.SESSION_STARTED,
-                        session_id=sid,
-                    )
-
-        log.info("[Claude] stdout stream ended")
-
-        # Wait for stderr and process exit
-        stderr_data = await stderr_task
-        returncode = await proc.wait()
-        self._current_process = None
-
-        if returncode != 0 and stderr_data:
-            stderr_text = stderr_data.decode("utf-8", errors="replace").strip()
-            if stderr_text:
-                log.error("[Claude] stderr: %s", stderr_text)
-                yield StreamEvent(
-                    type=StreamEventType.ERROR, error=stderr_text
-                )
-
-        yield StreamEvent(type=StreamEventType.DONE)
-
-    async def respond_to_permission(
-        self, request_id: str, granted: bool
-    ) -> None:
-        # Claude permissions go through HTTP hooks, not process stdin.
-        # The PermissionServer handles this directly.
-        pass
-
-    async def cancel(self) -> None:
-        proc = self._current_process
-        self._current_process = None
-        if proc:
-            log.info("[Claude] Cancelling process pid=%d", proc.pid)
-            await terminate_process(proc)
-
-    async def shutdown(self) -> None:
-        await self.cancel()
-
-    def _build_args(self, prompt: str, session_id: str | None) -> list[str]:
-        args = [
-            "-p",
-            "--verbose",
-            "--output-format", "stream-json",
-        ]
+        if system_prompt:
+            args += ["--append-system-prompt", system_prompt]
 
         if self._permission_server:
             args += ["--settings", self._permission_server.hook_settings_json]
@@ -179,5 +49,65 @@ class ClaudeService(AgentService):
         args.append(prompt)
         return args
 
-    def _build_env(self) -> dict[str, str]:
-        return build_cli_env()
+    async def _parse_line(self, data: dict) -> AsyncIterator[StreamEvent]:
+        msg_type = data.get("type")
+
+        if msg_type == "system":
+            if data.get("subtype") == "init":
+                sid = data.get("session_id")
+                if sid:
+                    log.info("[Claude] Session started: %s", sid)
+                    yield StreamEvent(
+                        type=StreamEventType.SESSION_STARTED, session_id=sid,
+                    )
+
+        elif msg_type == "stream_event":
+            event = data.get("event", {})
+            event_type = event.get("type")
+
+            if event_type == "content_block_start":
+                content_block = event.get("content_block", {})
+                if content_block.get("type") == "tool_use":
+                    yield StreamEvent(
+                        type=StreamEventType.TOOL_USE_STARTED,
+                        tool_id=content_block.get("id", ""),
+                        tool_name=content_block.get("name", ""),
+                    )
+
+            elif event_type == "content_block_delta":
+                delta = event.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    text = delta.get("text", "")
+                    if text:
+                        yield StreamEvent(
+                            type=StreamEventType.TEXT_DELTA, text=text,
+                        )
+
+        elif msg_type == "result":
+            result_text = data.get("result", "")
+            if data.get("is_error"):
+                log.error("[Claude] API error: %s", result_text)
+                yield StreamEvent(
+                    type=StreamEventType.ERROR, error=result_text,
+                )
+            elif result_text:
+                log.info("[Claude] Result received, len=%d", len(result_text))
+                yield StreamEvent(
+                    type=StreamEventType.TEXT_COMPLETE, text=result_text,
+                )
+
+            # Capture session_id from result if not yet seen
+            sid = data.get("session_id")
+            if sid:
+                yield StreamEvent(
+                    type=StreamEventType.SESSION_STARTED, session_id=sid,
+                )
+
+            # Token usage from result
+            cost = data.get("cost_usd") or data.get("cost")
+            usage_stats = data.get("usage") or data.get("stats")
+            if cost is not None or usage_stats:
+                yield StreamEvent(
+                    type=StreamEventType.USAGE,
+                    usage={"cost_usd": cost, **(usage_stats or {})},
+                )

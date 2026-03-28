@@ -16,17 +16,28 @@ class TestCodexArgBuilding:
 
     def test_fresh_session_args(self):
         service = CodexService(executable="/usr/bin/codex")
-        args = service._build_args("hello world", session_id=None)
+        args = service._build_args("hello world", session_id=None, system_prompt=None)
         assert args == ["exec", "--json", "--full-auto", "hello world"]
 
     def test_resume_session_args(self):
         service = CodexService(executable="/usr/bin/codex")
-        args = service._build_args("follow up", session_id="thread-123")
+        args = service._build_args("follow up", session_id="thread-123", system_prompt=None)
         assert args == [
             "exec", "resume", "thread-123",
             "--json", "--full-auto",
             "follow up",
         ]
+
+    def test_system_prompt_prepended(self):
+        service = CodexService(executable="/usr/bin/codex")
+        args = service._build_args("hello", session_id=None, system_prompt="You are X.")
+        assert args[-1] == "You are X.\n\nhello"
+
+    def test_model_flag(self):
+        service = CodexService(executable="/usr/bin/codex", model="o3")
+        args = service._build_args("hello", session_id=None, system_prompt=None)
+        assert "--model" in args
+        assert args[args.index("--model") + 1] == "o3"
 
 
 class TestCodexEventParsing:
