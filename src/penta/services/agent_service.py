@@ -163,6 +163,7 @@ class CliAgentService(AgentService):
                 data = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            log.debug("[%s] raw: %s", self._agent_name, line[:2000])
             async for event in self._parse_line(data):
                 yield event
 
