@@ -7,13 +7,13 @@ import pytest
 
 from penta.models.agent_type import AgentType
 from penta.models.message_sender import RESERVED_SENDER_NAMES
-from penta.services.db import PentaDB
+from penta.services.db_schema import db_path_for
 from penta_mcp.server import send_to_group_chat
 
 
 def _get_senders(directory: Path) -> list[str]:
     """Read sender names directly from the DB file."""
-    path = PentaDB.db_path_for(directory)
+    path = db_path_for(directory)
     conn = sqlite3.connect(str(path))
     rows = conn.execute("SELECT sender FROM messages ORDER BY id").fetchall()
     conn.close()

@@ -14,14 +14,14 @@ from mcp.server.fastmcp import FastMCP
 
 from penta.models.agent_type import AgentType
 from penta.models.message_sender import sanitize_external_name
-from penta.services.db import CREATE_TABLES_SQL, PentaDB
+from penta.services.db_schema import CREATE_TABLES_SQL, db_path_for
 
 mcp = FastMCP("penta-group-chat")
 
 
 def _open_db(directory: str) -> sqlite3.Connection:
     """Open a sync sqlite3 connection for the given project directory."""
-    path = PentaDB.db_path_for(Path(directory))
+    path = db_path_for(Path(directory))
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=WAL")
@@ -33,7 +33,7 @@ def _open_db(directory: str) -> sqlite3.Connection:
 @mcp.tool()
 def get_group_chat(directory: str, last_n: int = 50) -> str:
     """Get recent messages from the Penta group chat for the given project directory."""
-    path = PentaDB.db_path_for(Path(directory))
+    path = db_path_for(Path(directory))
     if not path.exists():
         return f"No group chat messages yet for {directory}."
 
