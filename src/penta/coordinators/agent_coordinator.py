@@ -169,6 +169,9 @@ class AgentCoordinator:
                         self._set_status(AgentStatus.PROCESSING)
 
                     case StreamEventType.THINKING:
+                        response.thinking_text += event.text or ""
+                        if self.on_text_delta:
+                            self.on_text_delta(self.config.id, "")
                         log.debug(
                             "[%s] Thinking: %s",
                             self.config.name, (event.text or "")[:100],

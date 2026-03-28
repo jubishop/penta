@@ -45,6 +45,12 @@ class ChatMessage(Vertical):
     ChatMessage .message-body {
         padding: 0 0 0 2;
     }
+    ChatMessage .thinking-text {
+        color: $text-muted;
+        text-style: dim italic;
+        padding: 0 0 0 2;
+        margin: 0 0 1 0;
+    }
     ChatMessage .streaming-cursor {
         color: yellow;
     }
@@ -53,6 +59,7 @@ class ChatMessage(Vertical):
     }
     """
 
+    thinking_text: reactive[str] = reactive("")
     body_text: reactive[str] = reactive("")
     is_streaming: reactive[bool] = reactive(False)
 
@@ -67,6 +74,7 @@ class ChatMessage(Vertical):
         self._message = message
         self._sender_name = sender_name
         self._sender_type = sender_type
+        self.thinking_text = message.thinking_text
         self.body_text = message.text
         self.is_streaming = message.is_streaming
 
@@ -81,7 +89,21 @@ class ChatMessage(Vertical):
                 sender_class = "sender-external"
 
         yield Static(label, classes=f"sender-label {sender_class}")
+        thinking_widget = Static("", classes="thinking-text")
+        thinking_widget.display = bool(self.thinking_text)
+        yield thinking_widget
         yield Markdown(self.body_text or ("..." if self.is_streaming else ""), classes="message-body")
+
+    def watch_thinking_text(self, value: str) -> None:
+        try:
+            widget = self.query_one(".thinking-text", Static)
+            if value:
+                widget.update(value)
+                widget.display = True
+            else:
+                widget.display = False
+        except Exception:
+            log.debug("watch_thinking_text: widget not ready", exc_info=True)
 
     def watch_body_text(self, value: str) -> None:
         try:

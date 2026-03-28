@@ -65,9 +65,14 @@ class GeminiService(CliAgentService):
             if role == "assistant" and data.get("delta"):
                 text = data.get("content", "")
                 if text:
-                    yield StreamEvent(
-                        type=StreamEventType.TEXT_DELTA, text=text,
-                    )
+                    if data.get("thought"):
+                        yield StreamEvent(
+                            type=StreamEventType.THINKING, text=text,
+                        )
+                    else:
+                        yield StreamEvent(
+                            type=StreamEventType.TEXT_DELTA, text=text,
+                        )
 
         elif msg_type == "tool_use":
             # Surface tool arguments when available
