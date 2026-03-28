@@ -47,6 +47,8 @@ class GeminiService(CliAgentService):
         args += ["-p", effective_prompt]
         return args
 
+    _THOUGHT_MARKER = "[Thought: true]"
+
     async def _parse_line(self, data: dict) -> AsyncIterator[StreamEvent]:
         msg_type = data.get("type")
 
@@ -65,10 +67,19 @@ class GeminiService(CliAgentService):
             if role == "assistant" and data.get("delta"):
                 text = data.get("content", "")
                 if text:
-                    if data.get("thought"):
-                        yield StreamEvent(
-                            type=StreamEventType.THINKING, text=text,
-                        )
+                    is_thought = bool(data.get("thought"))
+
+                    # Gemini CLI embeds [Thought: true] as literal text
+                    # in the content field — strip it and route to thinking.
+                    if text.startswith(self._THOUGHT_MARKER):
+                        text = text[len(self._THOUGHT_MARKER):]
+                        is_thought = True
+
+                    if is_thought:
+                        if text:
+                            yield StreamEvent(
+                                type=StreamEventType.THINKING, text=text,
+                            )
                     else:
                         yield StreamEvent(
                             type=StreamEventType.TEXT_DELTA, text=text,
