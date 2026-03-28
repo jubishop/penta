@@ -40,6 +40,7 @@ class AgentCoordinator:
         self.session_id: str | None = db.load_session(config.name)
         self.full_history: list[TaggedMessage] = []
         self.last_prompted_index: int = 0
+        self._pre_prompt_index: int = 0
         self._working_dir = working_dir
         self._db = db
         self._other_names: list[str] = other_agent_names or []
@@ -64,6 +65,9 @@ class AgentCoordinator:
         """Send a message and return the streaming response Message."""
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
+            # Roll back last_prompted_index so the next prompt re-includes
+            # messages that were part of the cancelled stream.
+            self.last_prompted_index = self._pre_prompt_index
 
         self.full_history.append(tagged)
         response = Message(
@@ -75,6 +79,7 @@ class AgentCoordinator:
         self._set_status(AgentStatus.PROCESSING)
 
         system_prompt = self._get_system_prompt()
+        self._pre_prompt_index = self.last_prompted_index
         prompt = self._build_prompt(tagged)
         self._current_task = asyncio.create_task(
             self._stream_response(prompt, response, system_prompt)

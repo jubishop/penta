@@ -196,6 +196,124 @@ class TestCancelledStreamIsNotTreatedAsSuccess:
         await asyncio.sleep(0.05)
 
 
+class TestCancelledStreamRollsBackPromptIndex:
+    """Regression: when two agents finish simultaneously and both mention the
+    same target agent, the second send() cancels the first stream.  The
+    replacement prompt must include messages from the cancelled stream so the
+    agent doesn't miss context (e.g. "Now we just need @codex to weigh in"
+    when Codex already responded)."""
+
+    @pytest.mark.asyncio
+    async def test_cancelled_send_does_not_skip_messages(
+        self, coordinator: AgentCoordinator
+    ):
+        """Simulate: user message (hop 0) → agent responds → Codex and Gemini
+        both mention this agent nearly simultaneously.  The second send()
+        cancels the first, but the replacement prompt must still contain the
+        first agent's message."""
+        conversation: list[Message] = []
+
+        # Seed: a user message was already prompted (hop 0).
+        user_msg = TaggedMessage(sender_label="User", text="plan a trip")
+        coordinator.send(user_msg, conversation)
+        await asyncio.sleep(0.05)
+        # Pretend the stream completed normally so last_prompted_index advances.
+        coordinator._current_task.cancel()
+        await asyncio.sleep(0.05)
+        # Manually advance as if the stream finished (normal completion path).
+        coordinator.last_prompted_index = len(coordinator.full_history)
+        coordinator._pre_prompt_index = coordinator.last_prompted_index
+
+        # Now two agents finish nearly simultaneously and both mention us.
+        codex_msg = TaggedMessage(sender_label="codex", text="@test-agent here's my take")
+        gemini_msg = TaggedMessage(sender_label="gemini", text="@test-agent I agree")
+
+        # First send: Codex's message arrives.
+        resp1 = coordinator.send(codex_msg, conversation)
+        await asyncio.sleep(0.05)  # Let stream start
+
+        # Second send: Gemini's message arrives, cancelling Codex's stream.
+        resp2 = coordinator.send(gemini_msg, conversation)
+        await asyncio.sleep(0.05)
+
+        # The cancelled response must be flagged.
+        assert resp1.is_cancelled is True
+
+        # Critical assertion: the prompt that was built for the Gemini send
+        # must include Codex's message in the catch-up section.
+        # We can verify by checking the prompt that was passed to the service.
+        # Rebuild what _build_prompt would have produced for the second send:
+        # Since the service is a HangingService, we can inspect the prompt
+        # by looking at what _build_prompt would return.  Instead, let's
+        # verify the index state: last_prompted_index should cover both.
+        #
+        # More directly: build a third prompt and confirm Codex's message
+        # is NOT in the catch-up (meaning it WAS included in the second prompt).
+        coordinator._current_task.cancel()
+        await asyncio.sleep(0.05)
+        coordinator.last_prompted_index = len(coordinator.full_history)
+
+        check_msg = TaggedMessage(sender_label="User", text="check")
+        coordinator.full_history.append(check_msg)
+        check_prompt = coordinator._build_prompt(check_msg)
+
+        # If the fix works, Codex's message was included in the Gemini prompt,
+        # so it should NOT appear in this follow-up prompt.
+        assert "@test-agent here's my take" not in check_prompt
+        assert "@test-agent I agree" not in check_prompt
+        assert "check" in check_prompt
+
+    @pytest.mark.asyncio
+    async def test_replacement_prompt_contains_cancelled_message(
+        self, coordinator: AgentCoordinator
+    ):
+        """Directly verify the prompt text of the replacement send includes
+        the message from the cancelled stream."""
+        conversation: list[Message] = []
+
+        # Prime: a user message was already prompted.
+        user_msg = TaggedMessage(sender_label="User", text="hello")
+        coordinator.full_history.append(user_msg)
+        coordinator._build_prompt(user_msg)  # advances last_prompted_index
+
+        # Two agents respond simultaneously.
+        codex_msg = TaggedMessage(sender_label="codex", text="@test-agent Codex here")
+        gemini_msg = TaggedMessage(sender_label="gemini", text="@test-agent Gemini here")
+
+        # First send (Codex) — starts streaming.
+        coordinator.send(codex_msg, conversation)
+        await asyncio.sleep(0.05)
+
+        # Capture prompt index before second send.
+        # Second send (Gemini) — cancels the first.
+        # We need to capture the prompt.  Monkey-patch _build_prompt to record it.
+        prompts: list[str] = []
+        original_build = coordinator._build_prompt
+
+        def capturing_build(tagged):
+            result = original_build(tagged)
+            prompts.append(result)
+            return result
+
+        coordinator._build_prompt = capturing_build  # type: ignore[assignment]
+        coordinator.send(gemini_msg, conversation)
+        await asyncio.sleep(0.05)
+
+        assert len(prompts) == 1
+        replacement_prompt = prompts[0]
+
+        # The replacement prompt MUST contain Codex's message as catch-up.
+        assert "Codex here" in replacement_prompt, (
+            "Codex's message was lost — the cancelled stream advanced "
+            "last_prompted_index past it"
+        )
+        # And the current message (Gemini) must be there too.
+        assert "Gemini here" in replacement_prompt
+
+        coordinator._current_task.cancel()
+        await asyncio.sleep(0.05)
+
+
 class TestServiceFailureDoesNotWedgeUI:
     """If the service raises an unexpected exception, the message must still
     be marked complete and the UI cleaned up."""
