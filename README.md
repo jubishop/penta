@@ -26,14 +26,14 @@ Type a message and press **Ctrl+Enter** to send.
 
 ### Mentioning agents
 
-Just use their name — no `@` or capitalization needed:
+Use `@name` to direct a message — capitalization doesn't matter:
 
 ```
-claude explain this function        → only Claude responds
-codex review these changes          → only Codex responds
-gemini summarize this file          → only Gemini responds
-claude and codex debate this        → both respond
-(no name mentioned)                 → all respond
+@claude explain this function       → only Claude responds
+@codex review these changes         → only Codex responds
+@gemini summarize this file         → only Gemini responds
+@claude and @codex debate this      → both respond
+(no mention)                        → all respond
 ```
 
 ### Permissions

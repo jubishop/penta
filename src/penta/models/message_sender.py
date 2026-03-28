@@ -7,6 +7,22 @@ from uuid import UUID
 
 RESERVED_SENDER_NAMES = frozenset({"user", "shell", "system"})
 
+EXTERNAL_SUFFIX = " (external)"
+
+
+def sanitize_external_name(
+    name: str, agent_names: frozenset[str],
+) -> str:
+    """Ensure an external sender name doesn't collide with built-in names.
+
+    Idempotent — already-suffixed names are returned unchanged.
+    """
+    if name.endswith(EXTERNAL_SUFFIX):
+        return name
+    if name.lower() in RESERVED_SENDER_NAMES | agent_names:
+        return f"{name}{EXTERNAL_SUFFIX}"
+    return name
+
 
 class MessageSenderKind(Enum):
     USER = "user"

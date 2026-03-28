@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
+import functools
 import os
 from pathlib import Path
 
 
-_cached_env: dict[str, str] | None = None
-
-
+@functools.lru_cache(maxsize=1)
 def build_cli_env() -> dict[str, str]:
     """Build an environment dict with common CLI install locations on PATH.
 
     Result is cached — the environment is stable for the lifetime of the process.
+    Call ``build_cli_env.cache_clear()`` in tests to reset.
     """
-    global _cached_env
-    if _cached_env is not None:
-        return _cached_env
     env = os.environ.copy()
     extra_paths = [
         str(Path.home() / ".local" / "bin"),
@@ -28,5 +25,4 @@ def build_cli_env() -> dict[str, str]:
         if p not in existing:
             existing = f"{p}:{existing}"
     env["PATH"] = existing
-    _cached_env = env
     return env

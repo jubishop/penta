@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+
+import aiosqlite
+
+log = logging.getLogger(__name__)
 
 
 def _default_storage_root() -> Path:
@@ -15,6 +20,20 @@ def _default_storage_root() -> Path:
     if override:
         return Path(override)
     return Path.home() / ".local" / "share"
+
+
+CREATE_TABLES_SQL = """
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender TEXT NOT NULL,
+        text TEXT NOT NULL,
+        timestamp TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+        agent_name TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL
+    );
+"""
 
 
 class PentaDB:
@@ -27,75 +46,84 @@ class PentaDB:
         self._storage_root = storage_root or _default_storage_root()
         self._db_path = self._resolve_path(self._directory, self._storage_root)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        self._create_tables()
-        self._last_data_version: int = self._get_data_version()
-        self._last_seen_id: int = self._get_max_id()
+        self._conn: aiosqlite.Connection | None = None
+        self._last_data_version: int = 0
+        self._last_seen_id: int = 0
         self._on_external_message: Callable[[str, str], None] | None = None
 
-    def close(self) -> None:
-        self._conn.close()
+    async def connect(self) -> None:
+        self._conn = await aiosqlite.connect(self._db_path)
+        await self._conn.execute("PRAGMA journal_mode=WAL")
+        await self._conn.execute("PRAGMA busy_timeout=5000")
+        await self._conn.executescript(CREATE_TABLES_SQL)
+        self._last_data_version = await self._get_data_version()
+        self._last_seen_id = await self._get_max_id()
+
+    async def close(self) -> None:
+        if self._conn:
+            await self._conn.close()
 
     # -- Messages --
 
-    def append_message(self, sender: str, text: str) -> int:
-        cur = self._conn.execute(
+    async def append_message(self, sender: str, text: str) -> int:
+        cur = await self._conn.execute(
             "INSERT INTO messages (sender, text, timestamp) VALUES (?, ?, ?)",
             (sender, text, datetime.now(timezone.utc).isoformat()),
         )
-        self._conn.commit()
+        await self._conn.commit()
         self._last_seen_id = cur.lastrowid
-        self._last_data_version = self._get_data_version()
+        self._last_data_version = await self._get_data_version()
         return cur.lastrowid
 
-    def get_messages(self, limit: int = 2000) -> list[tuple[int, str, str, str]]:
+    async def get_messages(self, limit: int = 2000) -> list[tuple[int, str, str, str]]:
         """Returns (id, sender, text, timestamp) tuples, oldest first."""
-        rows = self._conn.execute(
+        cur = await self._conn.execute(
             "SELECT id, sender, text, timestamp FROM messages "
             "ORDER BY id DESC LIMIT ?",
             (limit,),
-        ).fetchall()
+        )
+        rows = await cur.fetchall()
         return rows[::-1]
 
-    def check_external_changes(self) -> list[tuple[int, str, str, str]]:
+    async def check_external_changes(self) -> list[tuple[int, str, str, str]]:
         """Returns new rows written by other connections since last check."""
-        dv = self._get_data_version()
+        dv = await self._get_data_version()
         if dv == self._last_data_version:
             return []
         self._last_data_version = dv
-        rows = self._conn.execute(
+        cur = await self._conn.execute(
             "SELECT id, sender, text, timestamp FROM messages WHERE id > ? ORDER BY id",
             (self._last_seen_id,),
-        ).fetchall()
+        )
+        rows = await cur.fetchall()
         if rows:
             self._last_seen_id = rows[-1][0]
         return rows
 
-    def compact(self, max_messages: int | None = None) -> None:
+    async def compact(self, max_messages: int | None = None) -> None:
         limit = max_messages or self.MAX_MESSAGES
-        self._conn.execute(
+        await self._conn.execute(
             "DELETE FROM messages WHERE id NOT IN "
             "(SELECT id FROM messages ORDER BY id DESC LIMIT ?)",
             (limit,),
         )
-        self._conn.commit()
+        await self._conn.commit()
 
     # -- Sessions --
 
-    def save_session(self, agent_name: str, session_id: str) -> None:
-        self._conn.execute(
+    async def save_session(self, agent_name: str, session_id: str) -> None:
+        await self._conn.execute(
             "INSERT OR REPLACE INTO sessions (agent_name, session_id) VALUES (?, ?)",
             (agent_name, session_id),
         )
-        self._conn.commit()
+        await self._conn.commit()
 
-    def load_session(self, agent_name: str) -> str | None:
-        row = self._conn.execute(
+    async def load_session(self, agent_name: str) -> str | None:
+        cur = await self._conn.execute(
             "SELECT session_id FROM sessions WHERE agent_name = ?",
             (agent_name,),
-        ).fetchone()
+        )
+        row = await cur.fetchone()
         return row[0] if row else None
 
     # -- External change polling --
@@ -110,9 +138,9 @@ class PentaDB:
         while True:
             await asyncio.sleep(0.5)
             try:
-                rows = self.check_external_changes()
+                rows = await self.check_external_changes()
             except Exception:
-                logging.getLogger(__name__).exception(
+                log.exception(
                     "poll_external_messages: check failed, will retry"
                 )
                 continue
@@ -134,23 +162,12 @@ class PentaDB:
         root = storage_root or _default_storage_root()
         return PentaDB._resolve_path(resolved, root)
 
-    def _create_tables(self) -> None:
-        self._conn.executescript("""
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sender TEXT NOT NULL,
-                text TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS sessions (
-                agent_name TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL
-            );
-        """)
+    async def _get_data_version(self) -> int:
+        cur = await self._conn.execute("PRAGMA data_version")
+        row = await cur.fetchone()
+        return row[0]
 
-    def _get_data_version(self) -> int:
-        return self._conn.execute("PRAGMA data_version").fetchone()[0]
-
-    def _get_max_id(self) -> int:
-        row = self._conn.execute("SELECT MAX(id) FROM messages").fetchone()
+    async def _get_max_id(self) -> int:
+        cur = await self._conn.execute("SELECT MAX(id) FROM messages")
+        row = await cur.fetchone()
         return row[0] or 0
