@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-# Shared tag format — used by coordinator prompts and Gemini response parser.
+# Shared tag format — used by coordinator prompts and response parsing.
 GROUP_TAG_RE = re.compile(r"^\[Group - [^\]]+\]:\s*")
 
 

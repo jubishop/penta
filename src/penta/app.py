@@ -66,7 +66,6 @@ class PentaApp(App):
         # Seed agents
         claude = await state.add_agent("claude", AgentType.CLAUDE)
         codex = await state.add_agent("codex", AgentType.CODEX)
-        gemini = await state.add_agent("gemini", AgentType.GEMINI)
 
         # Add status indicators
         status_bar = self.query_one("#status-bar", Horizontal)

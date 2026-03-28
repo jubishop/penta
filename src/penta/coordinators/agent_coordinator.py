@@ -18,7 +18,6 @@ from penta.models import (
 from penta.services.agent_service import AgentService, StreamEventType
 from penta.services.claude_service import ClaudeService
 from penta.services.codex_service import CodexService
-from penta.services.gemini_service import GeminiService
 from penta.services.db import PentaDB
 from penta.services.permission_server import PermissionServer
 from penta.utils import log_task_error
@@ -93,7 +92,7 @@ class AgentCoordinator:
         """Resolve a pending permission request via the HTTP bridge.
 
         Only Claude uses interactive permissions (via PermissionServer).
-        Codex and Gemini auto-approve all tool use at the CLI level.
+        Codex auto-approves all tool use at the CLI level.
         """
         if self._permission_server:
             self._permission_server.resolve_permission(request_id, granted)
@@ -113,13 +112,8 @@ class AgentCoordinator:
     # -- Prompt construction --
 
     def _get_system_prompt(self) -> str | None:
-        """Return identity preamble.
-
-        Gemini needs the preamble every turn because it tends to drop the
-        ``[Group - <name>]:`` prefix on resumed sessions, which breaks the
-        thinking/response parser.  Other agents only get it on the first turn.
-        """
-        if self.session_id is None or self.config.type == AgentType.GEMINI:
+        """Return identity preamble on the first turn only."""
+        if self.session_id is None:
             return self._identity_preamble()
         return None
 
@@ -267,11 +261,6 @@ class AgentCoordinator:
                 executable=executable,
                 model=self.config.model,
                 permission_server=self._permission_server,
-            )
-        elif self.config.type == AgentType.GEMINI:
-            return GeminiService(
-                executable=executable,
-                model=self.config.model,
             )
         else:
             return CodexService(

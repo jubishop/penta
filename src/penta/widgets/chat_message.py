@@ -36,9 +36,6 @@ class ChatMessage(Vertical):
     ChatMessage .sender-codex {
         color: green;
     }
-    ChatMessage .sender-gemini {
-        color: dodgerblue;
-    }
     ChatMessage .sender-external {
         color: magenta;
     }
