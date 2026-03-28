@@ -33,7 +33,9 @@ class StreamEventType(Enum):
     TEXT_DELTA = auto()
     TEXT_COMPLETE = auto()
     TOOL_USE_STARTED = auto()
+    THINKING = auto()
     PERMISSION_REQUESTED = auto()
+    WARNING = auto()
     ERROR = auto()
     USAGE = auto()
     DONE = auto()
@@ -114,6 +116,9 @@ class CliAgentService(AgentService):
     def _should_report_stderr(self, stderr_text: str, returncode: int) -> bool:
         return returncode != 0 and bool(stderr_text)
 
+    def _reset_parse_state(self) -> None:
+        """Reset per-send parser state. Subclasses override if stateful."""
+
     # -- Shared lifecycle ----------------------------------------------------
 
     async def send(
@@ -124,6 +129,7 @@ class CliAgentService(AgentService):
         system_prompt: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         await self.cancel()
+        self._reset_parse_state()
 
         if not self._executable:
             yield StreamEvent(

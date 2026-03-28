@@ -39,7 +39,13 @@ class CodexService(CliAgentService):
         if self._model:
             args += ["--model", self._model]
 
-        args += ["--json", "--full-auto", effective_prompt]
+        args += [
+            "--json",
+            "--full-auto",
+            "--ask-for-approval", "never",
+            "--skip-git-repo-check",
+            effective_prompt,
+        ]
         return args
 
     async def _parse_line(self, data: dict) -> AsyncIterator[StreamEvent]:
@@ -80,6 +86,23 @@ class CodexService(CliAgentService):
                     tool_id=item.get("id", ""),
                     tool_name=f"{server}:{tool}" if server else tool,
                 )
+            elif item_type == "web_search":
+                query = item.get("query", "web search")
+                yield StreamEvent(
+                    type=StreamEventType.TOOL_USE_STARTED,
+                    tool_id=item.get("id", ""),
+                    tool_name=f"web_search: {query}",
+                )
+
+        elif event_type == "item.updated":
+            item = data.get("item", {})
+            item_type = item.get("type", "")
+            if item_type == "agent_message":
+                text = item.get("text", "")
+                if text:
+                    yield StreamEvent(
+                        type=StreamEventType.TEXT_DELTA, text=text,
+                    )
 
         elif event_type == "item.completed":
             item = data.get("item", {})
@@ -94,8 +117,27 @@ class CodexService(CliAgentService):
                 text = item.get("text", "")
                 if text:
                     yield StreamEvent(
+                        type=StreamEventType.THINKING, text=text,
+                    )
+            elif item_type == "command_execution":
+                exit_code = item.get("exit_code")
+                output = item.get("aggregated_output", "")
+                if exit_code and exit_code != 0 and output:
+                    # Surface failed command output as a warning
+                    log.warning(
+                        "[Codex] Command failed (exit %d): %s",
+                        exit_code, output[:200],
+                    )
+            elif item_type == "todo_list":
+                items = item.get("items", [])
+                if items:
+                    lines = []
+                    for t in items:
+                        check = "x" if t.get("completed") else " "
+                        lines.append(f"  [{check}] {t.get('text', '')}")
+                    yield StreamEvent(
                         type=StreamEventType.TEXT_DELTA,
-                        text=f"> *Reasoning:* {text}\n",
+                        text="\n".join(lines) + "\n",
                     )
 
         elif event_type == "turn.completed":
@@ -106,7 +148,10 @@ class CodexService(CliAgentService):
                 )
 
         elif event_type == "turn.failed":
-            message = data.get("message") or data.get("error", "Turn failed")
+            error = data.get("error", {})
+            message = error.get("message") if isinstance(error, dict) else str(error)
+            if not message:
+                message = data.get("message", "Turn failed")
             log.error("[Codex] Turn failed: %s", message)
             yield StreamEvent(
                 type=StreamEventType.ERROR, error=str(message),

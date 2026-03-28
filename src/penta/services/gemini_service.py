@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import AsyncIterator
 
@@ -69,10 +70,14 @@ class GeminiService(CliAgentService):
                     )
 
         elif msg_type == "tool_use":
+            # Surface tool arguments when available
+            params = data.get("parameters")
+            tool_input = json.dumps(params, indent=2) if params else None
             yield StreamEvent(
                 type=StreamEventType.TOOL_USE_STARTED,
                 tool_id=data.get("tool_id", ""),
                 tool_name=data.get("tool_name", ""),
+                tool_input=tool_input,
             )
 
         elif msg_type == "error":
@@ -85,6 +90,9 @@ class GeminiService(CliAgentService):
                 )
             else:
                 log.warning("[Gemini] Warning: %s", message)
+                yield StreamEvent(
+                    type=StreamEventType.WARNING, error=message,
+                )
 
         elif msg_type == "result":
             status = data.get("status", "")

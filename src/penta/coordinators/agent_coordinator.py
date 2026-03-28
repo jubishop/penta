@@ -179,6 +179,17 @@ class AgentCoordinator:
                                 tool_input=event.tool_input or "",
                             ))
 
+                    case StreamEventType.THINKING:
+                        log.debug(
+                            "[%s] Thinking: %s",
+                            self.config.name, (event.text or "")[:100],
+                        )
+
+                    case StreamEventType.WARNING:
+                        log.warning(
+                            "[%s] %s", self.config.name, event.error,
+                        )
+
                     case StreamEventType.ERROR:
                         if response.text:
                             response.text += f"\n\n[Error: {event.error}]"
