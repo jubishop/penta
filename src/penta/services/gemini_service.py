@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import AsyncIterator
 
 from penta.models import AgentType
 from penta.services.agent_service import CliAgentService, StreamEvent, StreamEventType
 
 log = logging.getLogger(__name__)
+
+# Gemini CLI embeds "[Thought: true]" as literal text in the content
+# field rather than using a JSON boolean.  Everything before the model's
+# actual response (tagged "[Group - <name>]:") is thinking.
+_THOUGHT_MARKER = "[Thought: true]"
+_GROUP_TAG_RE = re.compile(r"^\[Group - [^\]]+\]:\s*")
 
 
 class GeminiService(CliAgentService):
@@ -23,6 +30,10 @@ class GeminiService(CliAgentService):
             executable=executable or AgentType.GEMINI.find_executable(),
             model=model,
         )
+        self._in_response = False
+
+    def _reset_parse_state(self) -> None:
+        self._in_response = False
 
     def _should_report_stderr(self, stderr_text: str, returncode: int) -> bool:
         # Gemini dumps MCP debug noise to stderr — only report real errors
@@ -47,8 +58,6 @@ class GeminiService(CliAgentService):
         args += ["-p", effective_prompt]
         return args
 
-    _THOUGHT_MARKER = "[Thought: true]"
-
     async def _parse_line(self, data: dict) -> AsyncIterator[StreamEvent]:
         msg_type = data.get("type")
 
@@ -66,23 +75,37 @@ class GeminiService(CliAgentService):
                 return
             if role == "assistant" and data.get("delta"):
                 text = data.get("content", "")
-                if text:
-                    is_thought = bool(data.get("thought"))
+                if not text:
+                    return
 
-                    # Gemini CLI embeds [Thought: true] as literal text
-                    # in the content field — strip it and route to thinking.
-                    if text.startswith(self._THOUGHT_MARKER):
-                        text = text[len(self._THOUGHT_MARKER):]
-                        is_thought = True
+                if self._in_response:
+                    # Already past the [Group - <name>]: tag — emit as text.
+                    yield StreamEvent(
+                        type=StreamEventType.TEXT_DELTA, text=text,
+                    )
+                    return
 
-                    if is_thought:
-                        if text:
+                # Split at [Thought: true] markers — they can appear mid-delta.
+                segments = text.split(_THOUGHT_MARKER)
+
+                for i, seg in enumerate(segments):
+                    if not seg:
+                        continue
+
+                    # Check if this segment starts the actual response.
+                    m = _GROUP_TAG_RE.match(seg)
+                    if m:
+                        self._in_response = True
+                        response_text = seg[m.end():]
+                        if response_text:
                             yield StreamEvent(
-                                type=StreamEventType.THINKING, text=text,
+                                type=StreamEventType.TEXT_DELTA,
+                                text=response_text,
                             )
                     else:
+                        # Still in thinking territory.
                         yield StreamEvent(
-                            type=StreamEventType.TEXT_DELTA, text=text,
+                            type=StreamEventType.THINKING, text=seg,
                         )
 
         elif msg_type == "tool_use":

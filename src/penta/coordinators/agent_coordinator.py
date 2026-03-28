@@ -129,6 +129,8 @@ class AgentCoordinator:
             f"Working directory: {self._working_dir}\n"
             f"Other participants: {others}, User.\n"
             f"Messages tagged [Group - <name>] are from the group chat visible to all.\n"
+            f"Always prefix your response with [Group - {self.config.name}]: "
+            f"(this tag is required so the chat system can display your message).\n"
             f"Use @name to address other participants. Respond naturally and concisely."
         )
 

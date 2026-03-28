@@ -71,12 +71,33 @@ class TestGeminiEventParsing:
         assert len(deltas) == 0
 
     @pytest.mark.asyncio
-    async def test_assistant_delta_yields_text(self):
+    async def test_assistant_delta_without_group_tag_yields_thinking(self):
+        """Content before [Group - <name>]: is thinking."""
         lines = [
             json.dumps({
                 "type": "message",
                 "role": "assistant",
-                "content": "Hi there!",
+                "content": "Let me think about this...",
+                "delta": True,
+            }),
+        ]
+        events = await _run_with_lines(lines)
+
+        thinking = [e for e in events if e.type == StreamEventType.THINKING]
+        assert len(thinking) == 1
+        assert thinking[0].text == "Let me think about this..."
+        # No TEXT_DELTA since there's no [Group - ] response tag
+        deltas = [e for e in events if e.type == StreamEventType.TEXT_DELTA]
+        assert len(deltas) == 0
+
+    @pytest.mark.asyncio
+    async def test_assistant_delta_with_group_tag_yields_text(self):
+        """Content starting with [Group - <name>]: is the response."""
+        lines = [
+            json.dumps({
+                "type": "message",
+                "role": "assistant",
+                "content": "[Group - User]: Hi there!",
                 "delta": True,
             }),
         ]
@@ -85,6 +106,69 @@ class TestGeminiEventParsing:
         deltas = [e for e in events if e.type == StreamEventType.TEXT_DELTA]
         assert len(deltas) == 1
         assert deltas[0].text == "Hi there!"
+
+    @pytest.mark.asyncio
+    async def test_thought_marker_mid_content_splits(self):
+        """[Thought: true] mid-delta splits into thinking segments."""
+        lines = [
+            json.dumps({
+                "type": "message",
+                "role": "assistant",
+                "content": "Planning a response...\n[Thought: true]Researching the topic...",
+                "delta": True,
+            }),
+        ]
+        events = await _run_with_lines(lines)
+
+        thinking = [e for e in events if e.type == StreamEventType.THINKING]
+        assert len(thinking) == 2
+        assert thinking[0].text == "Planning a response...\n"
+        assert thinking[1].text == "Researching the topic..."
+
+    @pytest.mark.asyncio
+    async def test_thought_marker_then_group_tag_splits_thinking_and_response(self):
+        """[Thought: true][Group - User]: transitions from thinking to response."""
+        lines = [
+            json.dumps({
+                "type": "message",
+                "role": "assistant",
+                "content": "Almost done thinking.\n[Thought: true][Group - User]: Here is my answer!",
+                "delta": True,
+            }),
+        ]
+        events = await _run_with_lines(lines)
+
+        thinking = [e for e in events if e.type == StreamEventType.THINKING]
+        assert len(thinking) == 1
+        assert thinking[0].text == "Almost done thinking.\n"
+
+        deltas = [e for e in events if e.type == StreamEventType.TEXT_DELTA]
+        assert len(deltas) == 1
+        assert deltas[0].text == "Here is my answer!"
+
+    @pytest.mark.asyncio
+    async def test_subsequent_deltas_after_group_tag_are_text(self):
+        """Once [Group - ] is seen, all further deltas are TEXT_DELTA."""
+        lines = [
+            json.dumps({
+                "type": "message",
+                "role": "assistant",
+                "content": "[Group - User]: Start of response.",
+                "delta": True,
+            }),
+            json.dumps({
+                "type": "message",
+                "role": "assistant",
+                "content": " More response text.",
+                "delta": True,
+            }),
+        ]
+        events = await _run_with_lines(lines)
+
+        deltas = [e for e in events if e.type == StreamEventType.TEXT_DELTA]
+        assert len(deltas) == 2
+        assert deltas[0].text == "Start of response."
+        assert deltas[1].text == " More response text."
 
     @pytest.mark.asyncio
     async def test_tool_use_with_parameters(self):
@@ -287,7 +371,7 @@ class TestGeminiFullTranscript:
 
     @pytest.mark.asyncio
     async def test_typical_tool_use_session(self):
-        """Simulate: init, text, tool use, tool result, more text, success result."""
+        """Simulate: init, thinking, tool use, tool result, thinking, response, result."""
         lines = [
             json.dumps({"type": "init", "session_id": "sess-1", "model": "gemini-3"}),
             json.dumps({"type": "message", "role": "user", "content": "read pyproject.toml"}),
@@ -312,7 +396,7 @@ class TestGeminiFullTranscript:
             json.dumps({
                 "type": "message",
                 "role": "assistant",
-                "content": "The project is called penta.",
+                "content": "Analyzing the config.\n[Thought: true][Group - User]: The project is called penta.",
                 "delta": True,
             }),
             json.dumps({
@@ -325,13 +409,17 @@ class TestGeminiFullTranscript:
 
         types = [e.type for e in events]
         assert StreamEventType.SESSION_STARTED in types
+        assert StreamEventType.THINKING in types
         assert StreamEventType.TEXT_DELTA in types
         assert StreamEventType.TOOL_USE_STARTED in types
         assert StreamEventType.USAGE in types
         assert types[-1] == StreamEventType.DONE
 
+        thinking = [e for e in events if e.type == StreamEventType.THINKING]
+        assert any("read that file" in e.text for e in thinking)
+        assert any("Analyzing" in e.text for e in thinking)
+
         deltas = [e for e in events if e.type == StreamEventType.TEXT_DELTA]
-        assert any("read that file" in e.text for e in deltas)
         assert any("penta" in e.text for e in deltas)
 
 
