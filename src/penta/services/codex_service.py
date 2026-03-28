@@ -41,7 +41,7 @@ class CodexService(CliAgentService):
 
         args += [
             "--json",
-            "--full-auto",
+            "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
             effective_prompt,
         ]
