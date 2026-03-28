@@ -164,10 +164,15 @@ class AgentCoordinator:
                             response.text = event.text
 
                     case StreamEventType.TOOL_USE_STARTED:
-                        if response.text:
-                            response.text += "\n\n"
-                        response.text += f"> Using {event.tool_name}...\n"
-                        received_text = True
+                        tool_line = f"> Using {event.tool_name}...\n"
+                        if received_text:
+                            # Already in the response body — append there.
+                            response.text += "\n\n" + tool_line
+                        else:
+                            # Still in thinking territory — keep body clean.
+                            response.thinking_text += tool_line
+                            if self.on_text_delta:
+                                self.on_text_delta(self.config.id, "")
                         self._set_status(AgentStatus.PROCESSING)
 
                     case StreamEventType.THINKING:
