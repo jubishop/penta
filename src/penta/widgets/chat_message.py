@@ -131,6 +131,11 @@ class ChatMessage(Vertical):
 
     def watch_is_streaming(self, value: bool) -> None:
         if not value:
+            if not self.body_text:
+                # Hide the entire widget when streaming ends with no content
+                # (e.g. cancelled responses).
+                self.display = False
+                return
             # Streaming finished — swap to rendered Markdown.
             try:
                 self.query_one(".message-body-stream", Static).display = False
