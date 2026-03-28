@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from typing import AsyncIterator
 
-from penta.models import AgentType
 from penta.services.agent_service import CliAgentService, StreamEvent, StreamEventType
 from penta.services.permission_server import PermissionServer
 
@@ -21,7 +20,7 @@ class ClaudeService(CliAgentService):
     ) -> None:
         super().__init__(
             agent_name="Claude",
-            executable=executable or AgentType.CLAUDE.find_executable(),
+            executable=executable,
             model=model,
         )
         self._permission_server = permission_server

@@ -119,6 +119,10 @@ class CliAgentService(AgentService):
     def _reset_parse_state(self) -> None:
         """Reset per-send parser state. Subclasses override if stateful."""
 
+    def _effective_prompt(self, prompt: str, system_prompt: str | None) -> str:
+        """Prepend system prompt for CLIs without a dedicated system-prompt flag."""
+        return f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+
     # -- Shared lifecycle ----------------------------------------------------
 
     async def send(
@@ -158,15 +162,27 @@ class CliAgentService(AgentService):
 
         stderr_task = asyncio.create_task(proc.stderr.read())
 
-        async for line in async_lines(proc.stdout):
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            log.debug("[%s] raw: %s", self._agent_name, line[:2000])
-            async for event in self._parse_line(data):
-                yield event
+        _abandoned = True
+        try:
+            async for line in async_lines(proc.stdout):
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                log.debug("[%s] raw: %s", self._agent_name, line[:2000])
+                async for event in self._parse_line(data):
+                    yield event
+            _abandoned = False
+        finally:
+            if _abandoned:
+                # Caller abandoned iteration (CancelledError / GeneratorExit)
+                # — clean up the subprocess so it doesn't leak.
+                if proc.returncode is None:
+                    await terminate_process(proc)
+                stderr_task.cancel()
+                self._current_process = None
 
+        # Normal completion — wait for stderr and process exit.
         log.info("[%s] stdout stream ended", self._agent_name)
 
         stderr_data = await stderr_task

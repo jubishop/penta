@@ -9,7 +9,6 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer, Static
 
-from penta.input_parser import ParsedChat, parse
 from penta.models import AgentStatus, AgentType, Message, PermissionRequest, AgentConfig
 from penta.models.app_state import AppState
 from penta.widgets.chat_message import ChatMessage
@@ -84,9 +83,7 @@ class PentaApp(App):
 
         # Start external message polling
         self._poll_task = state.start_external_polling(
-            lambda sender, text: self.call_from_thread(
-                state.receive_external_message, sender, text
-            )
+            state.receive_external_message,
         )
 
         # Compact on startup
@@ -103,9 +100,7 @@ class PentaApp(App):
     def on_input_bar_submitted(self, event: InputBar.Submitted) -> None:
         if not self._state:
             return
-        parsed = parse(event.text, self._state.agents)
-
-        self._state.send_user_message(parsed.text)
+        self._state.send_user_message(event.text.strip())
         self._render_new_messages()
 
     # -- Permission handling --
@@ -130,7 +125,7 @@ class PentaApp(App):
     def _on_permission_request(self, request: PermissionRequest) -> None:
         self._show_permission_dialog(request)
 
-    def _on_status_changed(self, agent_id: UUID, status: object) -> None:
+    def _on_status_changed(self, agent_id: UUID, status: AgentStatus) -> None:
         self._apply_status_change(agent_id, status)
 
     def _on_external_message(self, sender: str, text: str) -> None:
@@ -192,9 +187,9 @@ class PentaApp(App):
         )
         chat_room.mount(dialog)
 
-    def _apply_status_change(self, agent_id: UUID, status: object) -> None:
+    def _apply_status_change(self, agent_id: UUID, status: AgentStatus) -> None:
         indicator = self._status_indicators.get(agent_id)
-        if indicator and isinstance(status, AgentStatus):
+        if indicator:
             indicator.status = status
 
     def _render_new_messages(self) -> None:

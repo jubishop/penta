@@ -12,8 +12,8 @@ from penta.models import (
     AgentType,
     Message,
     MessageSender,
-    PermissionRequest,
     TaggedMessage,
+    group_tag_prefix,
 )
 from penta.services.agent_service import AgentService, StreamEventType
 from penta.services.claude_service import ClaudeService
@@ -25,18 +25,25 @@ from penta.services.permission_server import PermissionServer
 log = logging.getLogger(__name__)
 
 
+def _log_task_error(task: asyncio.Task) -> None:
+    """Done-callback for fire-and-forget tasks — log exceptions."""
+    if not task.cancelled() and task.exception():
+        log.error("Background task failed", exc_info=task.exception())
+
+
 class AgentCoordinator:
     def __init__(
         self,
         config: AgentConfig,
         working_dir: Path,
         db: PentaDB,
+        executable: str | None = None,
         permission_server: PermissionServer | None = None,
         other_agent_names: list[str] | None = None,
     ) -> None:
         self.config = config
         self._permission_server = permission_server
-        self.service: AgentService = self._create_service()
+        self.service: AgentService = self._create_service(executable)
         self.session_id: str | None = db.load_session(config.name)
         self.full_history: list[TaggedMessage] = []
         self.last_prompted_index: int = 0
@@ -49,7 +56,6 @@ class AgentCoordinator:
         # Callbacks set by AppState / App
         self.on_text_delta: Callable[[UUID, str], None] | None = None
         self.on_stream_complete: Callable[[Message, UUID], None] | None = None
-        self.on_permission_request: Callable[[PermissionRequest], None] | None = None
         self.on_status_changed: Callable[[UUID, AgentStatus], None] | None = None
 
     def set_other_agent_names(self, names: list[str]) -> None:
@@ -98,7 +104,8 @@ class AgentCoordinator:
     def cancel(self) -> None:
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
-        asyncio.create_task(self.service.cancel())
+        task = asyncio.create_task(self.service.cancel())
+        task.add_done_callback(_log_task_error)
 
     async def shutdown(self) -> None:
         self.cancel()
@@ -134,12 +141,13 @@ class AgentCoordinator:
 
     def _identity_preamble(self) -> str:
         others = ", ".join(self._other_names) if self._other_names else "other agents"
+        prefix = group_tag_prefix(self.config.name)
         return (
             f'You are "{self.config.name}" in a multi-agent group chat called Penta.\n'
             f"Working directory: {self._working_dir}\n"
             f"Other participants: {others}, User.\n"
             f"Messages tagged [Group - <name>] are from the group chat visible to all.\n"
-            f"Always prefix your response with [Group - {self.config.name}]: "
+            f"Always prefix your response with {prefix} "
             f"(this tag is required so the chat system can display your message).\n"
             f"Use @name to address other participants. Respond naturally and concisely."
         )
@@ -254,20 +262,20 @@ class AgentCoordinator:
         if self.on_status_changed:
             self.on_status_changed(self.config.id, status)
 
-    def _create_service(self) -> AgentService:
+    def _create_service(self, executable: str | None) -> AgentService:
         if self.config.type == AgentType.CLAUDE:
             return ClaudeService(
-                executable=self.config.type.find_executable(),
+                executable=executable,
                 model=self.config.model,
                 permission_server=self._permission_server,
             )
         elif self.config.type == AgentType.GEMINI:
             return GeminiService(
-                executable=self.config.type.find_executable(),
+                executable=executable,
                 model=self.config.model,
             )
         else:
             return CodexService(
-                executable=self.config.type.find_executable(),
+                executable=executable,
                 model=self.config.model,
             )
