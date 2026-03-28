@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import atexit
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
+from queue import SimpleQueue
 
 
 def _configure_logging(directory: Path) -> None:
@@ -13,16 +15,25 @@ def _configure_logging(directory: Path) -> None:
 
     log_dir = PentaDB.db_path_for(directory).parent
     log_dir.mkdir(parents=True, exist_ok=True)
-    handler = RotatingFileHandler(
+
+    file_handler = RotatingFileHandler(
         log_dir / "penta.log",
         maxBytes=5 * 1024 * 1024,  # 5 MB
         backupCount=3,
     )
-    handler.setFormatter(logging.Formatter(
+    file_handler.setFormatter(logging.Formatter(
         "%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     ))
+
+    # QueueHandler + QueueListener: log calls push to an in-memory queue
+    # (non-blocking), a background thread drains to the file handler.
+    log_queue: SimpleQueue = SimpleQueue()
+    listener = QueueListener(log_queue, file_handler, respect_handler_level=True)
+    listener.start()
+    atexit.register(listener.stop)
+
     root = logging.getLogger()
-    root.addHandler(handler)
+    root.addHandler(QueueHandler(log_queue))
     root.setLevel(logging.DEBUG)
 
 
