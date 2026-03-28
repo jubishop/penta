@@ -42,7 +42,6 @@ class CodexService(CliAgentService):
         args += [
             "--json",
             "--full-auto",
-            "--ask-for-approval", "never",
             "--skip-git-repo-check",
             effective_prompt,
         ]
@@ -93,16 +92,6 @@ class CodexService(CliAgentService):
                     tool_id=item.get("id", ""),
                     tool_name=f"web_search: {query}",
                 )
-
-        elif event_type == "item.updated":
-            item = data.get("item", {})
-            item_type = item.get("type", "")
-            if item_type == "agent_message":
-                text = item.get("text", "")
-                if text:
-                    yield StreamEvent(
-                        type=StreamEventType.TEXT_DELTA, text=text,
-                    )
 
         elif event_type == "item.completed":
             item = data.get("item", {})

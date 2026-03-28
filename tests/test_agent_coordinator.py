@@ -29,9 +29,6 @@ class HangingService(AgentService):
         # Block indefinitely so the caller can cancel us.
         await asyncio.Event().wait()
 
-    async def respond_to_permission(self, request_id: str, granted: bool) -> None:
-        pass
-
     async def cancel(self) -> None:
         pass
 
@@ -209,9 +206,6 @@ class TestServiceFailureDoesNotWedgeUI:
             async def send(self, prompt, session_id, working_dir, system_prompt=None):
                 yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="partial")
                 raise ConnectionResetError("boom")
-
-            async def respond_to_permission(self, request_id, granted):
-                pass
 
             async def cancel(self):
                 pass

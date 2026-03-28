@@ -20,7 +20,6 @@ class TestCodexArgBuilding:
         assert args == [
             "exec",
             "--json", "--full-auto",
-            "--ask-for-approval", "never",
             "--skip-git-repo-check",
             "hello world",
         ]
@@ -31,7 +30,6 @@ class TestCodexArgBuilding:
         assert args == [
             "exec", "resume", "thread-123",
             "--json", "--full-auto",
-            "--ask-for-approval", "never",
             "--skip-git-repo-check",
             "follow up",
         ]
@@ -152,33 +150,6 @@ class TestCodexEventParsing:
         session_events = [e for e in events if e.type == StreamEventType.SESSION_STARTED]
         assert len(session_events) == 1
 
-
-    @pytest.mark.asyncio
-    async def test_item_updated_agent_message_yields_text_delta(self):
-        """item.updated with agent_message should emit TEXT_DELTA for streaming."""
-        lines = [
-            json.dumps({"type": "thread.started", "thread_id": "thr_1"}),
-            json.dumps({"type": "turn.started"}),
-            json.dumps({
-                "type": "item.updated",
-                "item": {"id": "item_0", "type": "agent_message", "text": "Hel"},
-            }),
-            json.dumps({
-                "type": "item.updated",
-                "item": {"id": "item_0", "type": "agent_message", "text": "lo!"},
-            }),
-            json.dumps({
-                "type": "item.completed",
-                "item": {"id": "item_0", "type": "agent_message", "text": "Hello!"},
-            }),
-            json.dumps({"type": "turn.completed", "usage": {}}),
-        ]
-        events = await _run_with_lines(lines)
-
-        delta_events = [e for e in events if e.type == StreamEventType.TEXT_DELTA]
-        assert len(delta_events) == 2
-        assert delta_events[0].text == "Hel"
-        assert delta_events[1].text == "lo!"
 
     @pytest.mark.asyncio
     async def test_web_search_yields_tool_use(self):

@@ -39,7 +39,7 @@ class ClaudeService(CliAgentService):
         session_id: str | None,
         system_prompt: str | None,
     ) -> list[str]:
-        args = ["-p", "--verbose", "--output-format", "stream-json"]
+        args = ["-p", "--verbose", "--output-format", "stream-json", "--include-partial-messages"]
 
         if self._model:
             args += ["--model", self._model]

@@ -34,7 +34,6 @@ class StreamEventType(Enum):
     TEXT_COMPLETE = auto()
     TOOL_USE_STARTED = auto()
     THINKING = auto()
-    PERMISSION_REQUESTED = auto()
     WARNING = auto()
     ERROR = auto()
     USAGE = auto()
@@ -55,7 +54,13 @@ class StreamEvent:
 
 
 class AgentService(ABC):
-    """Pure interface — test doubles inherit from this directly."""
+    """Pure interface — test doubles inherit from this directly.
+
+    Permission handling is intentionally NOT part of this interface.
+    Claude uses an out-of-band HTTP hook bridge (PermissionServer);
+    Codex and Gemini auto-approve all tool use.  The coordinator and
+    AppState handle permission resolution directly.
+    """
 
     @abstractmethod
     async def send(
@@ -65,11 +70,6 @@ class AgentService(ABC):
         working_dir: Path,
         system_prompt: str | None = None,
     ) -> AsyncIterator[StreamEvent]: ...
-
-    @abstractmethod
-    async def respond_to_permission(
-        self, request_id: str, granted: bool
-    ) -> None: ...
 
     @abstractmethod
     async def cancel(self) -> None: ...
@@ -179,11 +179,6 @@ class CliAgentService(AgentService):
                 yield StreamEvent(type=StreamEventType.ERROR, error=stderr_text)
 
         yield StreamEvent(type=StreamEventType.DONE)
-
-    async def respond_to_permission(
-        self, request_id: str, granted: bool
-    ) -> None:
-        pass
 
     async def cancel(self) -> None:
         proc = self._current_process

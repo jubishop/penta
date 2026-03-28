@@ -82,14 +82,13 @@ class AgentCoordinator:
         return response
 
     def resolve_permission(self, request_id: str, granted: bool) -> None:
-        """Resolve a pending permission request through the appropriate channel."""
-        if self.config.type == AgentType.CLAUDE:
-            if self._permission_server:
-                self._permission_server.resolve_permission(request_id, granted)
-        else:
-            asyncio.create_task(
-                self.service.respond_to_permission(request_id, granted)
-            )
+        """Resolve a pending permission request via the HTTP bridge.
+
+        Only Claude uses interactive permissions (via PermissionServer).
+        Codex and Gemini auto-approve all tool use at the CLI level.
+        """
+        if self._permission_server:
+            self._permission_server.resolve_permission(request_id, granted)
 
     def cancel(self) -> None:
         if self._current_task and not self._current_task.done():
@@ -168,16 +167,6 @@ class AgentCoordinator:
                         response.text += f"> Using {event.tool_name}...\n"
                         received_text = True
                         self._set_status(AgentStatus.PROCESSING)
-
-                    case StreamEventType.PERMISSION_REQUESTED:
-                        self._set_status(AgentStatus.AWAITING_PERMISSION)
-                        if self.on_permission_request:
-                            self.on_permission_request(PermissionRequest(
-                                id=event.request_id or "",
-                                agent_id=self.config.id,
-                                tool_name=event.tool_name or "unknown",
-                                tool_input=event.tool_input or "",
-                            ))
 
                     case StreamEventType.THINKING:
                         log.debug(
