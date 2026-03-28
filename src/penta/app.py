@@ -24,9 +24,11 @@ log = logging.getLogger(__name__)
 class PentaApp(App):
     CSS_PATH = "penta.tcss"
     TITLE = "Penta"
+    ENABLE_COMMAND_PALETTE = False
 
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
+        ("ctrl+enter", "submit", "Send"),
     ]
 
     def __init__(self, directory: Path, **kwargs) -> None:
@@ -99,6 +101,9 @@ class PentaApp(App):
             await self._state.shutdown()
 
     # -- Input handling --
+
+    def action_submit(self) -> None:
+        self.query_one(InputBar).action_submit()
 
     def on_input_bar_submitted(self, event: InputBar.Submitted) -> None:
         if not self._state:

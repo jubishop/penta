@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.widgets import Button, TextArea
@@ -22,6 +21,7 @@ class InputBar(Horizontal):
         width: 1fr;
         min-height: 1;
         max-height: 6;
+        border: round $accent;
     }
     InputBar Button {
         width: 8;
@@ -29,9 +29,7 @@ class InputBar(Horizontal):
     }
     """
 
-    BINDINGS = [
-        Binding("ctrl+enter", "submit", "Send", show=True),
-    ]
+    BINDINGS = []
 
     class Submitted(Message):
         def __init__(self, text: str) -> None:
