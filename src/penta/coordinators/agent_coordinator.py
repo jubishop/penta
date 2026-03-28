@@ -102,8 +102,13 @@ class AgentCoordinator:
     # -- Prompt construction --
 
     def _get_system_prompt(self) -> str | None:
-        """Return identity preamble on first turn, None on subsequent turns."""
-        if self.session_id is None:
+        """Return identity preamble.
+
+        Gemini needs the preamble every turn because it tends to drop the
+        ``[Group - <name>]:`` prefix on resumed sessions, which breaks the
+        thinking/response parser.  Other agents only get it on the first turn.
+        """
+        if self.session_id is None or self.config.type == AgentType.GEMINI:
             return self._identity_preamble()
         return None
 
