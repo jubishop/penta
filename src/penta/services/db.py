@@ -1,39 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import os
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 import aiosqlite
 
+from penta.services.db_schema import CREATE_TABLES_SQL, db_path_for, default_storage_root
+
 log = logging.getLogger(__name__)
-
-
-def _default_storage_root() -> Path:
-    """Respect PENTA_DATA_DIR, fall back to ~/.local/share."""
-    override = os.environ.get("PENTA_DATA_DIR")
-    if override:
-        return Path(override)
-    return Path.home() / ".local" / "share"
-
-
-CREATE_TABLES_SQL = """
-    CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sender TEXT NOT NULL,
-        text TEXT NOT NULL,
-        timestamp TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS sessions (
-        agent_name TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL
-    );
-"""
 
 
 class PentaDB:
@@ -43,8 +20,8 @@ class PentaDB:
         self, directory: Path, storage_root: Path | None = None,
     ) -> None:
         self._directory = directory.resolve()
-        self._storage_root = storage_root or _default_storage_root()
-        self._db_path = self._resolve_path(self._directory, self._storage_root)
+        self._storage_root = storage_root or default_storage_root()
+        self._db_path = db_path_for(self._directory, self._storage_root)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: aiosqlite.Connection | None = None
         self._last_data_version: int = 0
@@ -149,18 +126,6 @@ class PentaDB:
                     self._on_external_message(sender, text)
 
     # -- Internal --
-
-    @staticmethod
-    def _resolve_path(directory: Path, storage_root: Path) -> Path:
-        dir_hash = hashlib.sha256(str(directory).encode()).hexdigest()
-        return storage_root / "penta" / "chats" / dir_hash / "penta.db"
-
-    @staticmethod
-    def db_path_for(directory: Path, storage_root: Path | None = None) -> Path:
-        """Public helper for MCP server to find the DB path."""
-        resolved = directory.resolve()
-        root = storage_root or _default_storage_root()
-        return PentaDB._resolve_path(resolved, root)
 
     async def _get_data_version(self) -> int:
         cur = await self._conn.execute("PRAGMA data_version")
