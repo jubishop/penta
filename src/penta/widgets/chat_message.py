@@ -6,7 +6,7 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.css.query import NoMatches
 from textual.reactive import reactive
-from textual.widgets import Markdown, Static
+from textual.widgets import Collapsible, Markdown, Static
 
 from penta.models import Message
 from penta.models.agent_type import AgentType
@@ -43,11 +43,22 @@ class ChatMessage(Vertical):
     ChatMessage .message-body, ChatMessage .message-body-stream {
         padding: 0 0 0 2;
     }
+    ChatMessage .thinking-fold {
+        padding: 0 0 0 2;
+        margin: 0 0 1 0;
+    }
+    ChatMessage .thinking-fold > CollapsibleTitle {
+        color: $text-muted;
+        text-style: dim italic;
+        padding: 0;
+        height: 1;
+    }
+    ChatMessage .thinking-fold > Contents {
+        padding: 0 0 0 2;
+    }
     ChatMessage .thinking-text {
         color: $text-muted;
         text-style: dim italic;
-        padding: 0 0 0 2;
-        margin: 0 0 1 0;
     }
     ChatMessage .streaming-cursor {
         color: yellow;
@@ -87,9 +98,16 @@ class ChatMessage(Vertical):
                 sender_class = "sender-external"
 
         yield Static(label, classes=f"sender-label {sender_class}")
-        thinking_widget = Static("", classes="thinking-text")
-        thinking_widget.display = bool(self.thinking_text)
-        yield thinking_widget
+        # Start expanded while streaming so the user sees thinking in
+        # real-time; start collapsed for completed messages (history).
+        thinking_fold = Collapsible(
+            Static(self.thinking_text, classes="thinking-text"),
+            title="Thinking",
+            collapsed=not self.is_streaming,
+            classes="thinking-fold",
+        )
+        thinking_fold.display = bool(self.thinking_text)
+        yield thinking_fold
 
         # During streaming, use a cheap Static widget for text updates.
         # On completion, swap to Markdown for rich rendering (one parse).
@@ -107,12 +125,12 @@ class ChatMessage(Vertical):
 
     def watch_thinking_text(self, value: str) -> None:
         try:
-            widget = self.query_one(".thinking-text", Static)
+            fold = self.query_one(".thinking-fold", Collapsible)
             if value:
-                widget.update(value)
-                widget.display = True
+                self.query_one(".thinking-text", Static).update(value)
+                fold.display = True
             else:
-                widget.display = False
+                fold.display = False
         except NoMatches:
             log.debug("watch_thinking_text: widget not ready")
 
@@ -142,3 +160,10 @@ class ChatMessage(Vertical):
                 md.display = True
             except NoMatches:
                 log.debug("watch_is_streaming: widget not ready")
+            # Collapse thinking now that the response is complete.
+            try:
+                fold = self.query_one(".thinking-fold", Collapsible)
+                if self.thinking_text:
+                    fold.collapsed = True
+            except NoMatches:
+                pass
