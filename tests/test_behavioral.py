@@ -6,7 +6,10 @@ and verify prompts at the behavioral boundary.
 
 from __future__ import annotations
 
+import asyncio
+
 from penta.app_state import AppState
+from penta.models.agent_status import AgentStatus
 from penta.models.agent_type import AgentType
 
 
@@ -183,3 +186,43 @@ class TestErrorHandling:
         # Agent should be back to IDLE (observable via public API)
         claude = app.agent_by_name("claude")
         assert claude.status.name == "IDLE"
+
+
+class TestCancelAgent:
+    async def test_cancel_specific_agent(self, multi_agent_state):
+        app, services = multi_agent_state
+
+        claude = await app.add_agent("claude", AgentType.CLAUDE)
+        codex = await app.add_agent("codex", AgentType.CODEX)
+        services["claude"].enqueue_hang()
+        services["codex"].enqueue_hang()
+
+        await app.send_user_message("hello everyone")
+        await asyncio.sleep(0)
+
+        cancelled = app.cancel_agent(claude.id)
+        assert cancelled is True
+
+        # Codex should still be processing
+        assert codex.status == AgentStatus.PROCESSING
+
+    async def test_cancel_all_streaming(self, multi_agent_state):
+        app, services = multi_agent_state
+
+        await app.add_agent("claude", AgentType.CLAUDE)
+        await app.add_agent("codex", AgentType.CODEX)
+        services["claude"].enqueue_hang()
+        services["codex"].enqueue_hang()
+
+        await app.send_user_message("hello everyone")
+        await asyncio.sleep(0)
+
+        count = app.cancel_all_streaming()
+        assert count == 2
+
+    async def test_cancel_agent_when_idle(self, multi_agent_state):
+        app, services = multi_agent_state
+
+        claude = await app.add_agent("claude", AgentType.CLAUDE)
+        cancelled = app.cancel_agent(claude.id)
+        assert cancelled is False

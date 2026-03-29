@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from uuid import UUID
+
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static
 
@@ -7,14 +10,24 @@ from penta.models import AgentConfig, AgentStatus
 
 
 class StatusIndicator(Static):
-    """Shows agent name + colored status dot."""
+    """Shows agent name + colored status dot. Click while processing to stop."""
 
     DEFAULT_CSS = """
     StatusIndicator {
         width: auto;
         margin: 0 1;
     }
+    StatusIndicator.clickable {
+        text-style: underline;
+    }
     """
+
+    class StopRequested(Message):
+        """Posted when user clicks a processing indicator to stop that agent."""
+
+        def __init__(self, agent_id: UUID) -> None:
+            super().__init__()
+            self.agent_id = agent_id
 
     status: reactive[AgentStatus] = reactive(AgentStatus.IDLE)
 
@@ -32,6 +45,13 @@ class StatusIndicator(Static):
         }
         dot = dot_map.get(self.status, "[dim]○[/]")
         return f"{self._config.name}{dot}"
+
+    def watch_status(self, value: AgentStatus) -> None:
+        self.set_class(value == AgentStatus.PROCESSING, "clickable")
+
+    def on_click(self) -> None:
+        if self.status == AgentStatus.PROCESSING:
+            self.post_message(self.StopRequested(self._config.id))
 
 
 class ExternalIndicator(Static):

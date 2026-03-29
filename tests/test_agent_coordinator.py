@@ -601,6 +601,57 @@ class TestTripleCancellation:
         assert agent_replies[0].text == "final answer"
 
 
+class TestExplicitCancel:
+    """cancel() called externally (not via replacement send) must
+    interrupt the stream and fire the completion callback."""
+
+    async def test_cancel_interrupts_stream(
+        self, coordinator: AgentCoordinator, fake: FakeAgentService,
+    ):
+        fake.enqueue_hang()
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="hello")
+
+        response = coordinator.send(tagged, conversation)
+        await _let_task_start()
+        assert response.text == "partial"
+
+        coordinator.cancel()
+        await response.wait_for_completion()
+
+        assert response.is_cancelled is True
+        assert response.is_streaming is False
+        assert coordinator.config.status == AgentStatus.IDLE
+
+    async def test_cancel_fires_stream_complete_callback(
+        self, coordinator: AgentCoordinator, fake: FakeAgentService,
+    ):
+        fake.enqueue_hang()
+
+        completed: list[Message] = []
+        coordinator.on_stream_complete = lambda msg, _aid: completed.append(msg)
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="hello")
+        response = coordinator.send(tagged, conversation)
+        await _let_task_start()
+
+        coordinator.cancel()
+        await response.wait_for_completion()
+
+        assert len(completed) == 1
+        assert completed[0].is_cancelled is True
+
+    async def test_cancel_when_idle_is_noop(
+        self, coordinator: AgentCoordinator, fake: FakeAgentService,
+    ):
+        """Calling cancel() when no stream is active should not raise."""
+        coordinator.cancel()
+        await _let_task_start()  # let the async cancel task run
+        assert fake.cancel_called is True
+
+
 class TestPartialTextFromCancelledStream:
     """Verify that partial text streamed before cancellation doesn't
     leak into coordinator history or subsequent prompts."""
