@@ -6,6 +6,7 @@ from uuid import UUID
 
 from penta.coordinators.agent_coordinator import AgentCoordinator
 from penta.models.agent_config import AgentConfig
+from penta.models.agent_status import AgentStatus
 from penta.models.agent_type import AgentType
 from penta.models.permission_request import PermissionRequest
 
@@ -42,6 +43,9 @@ class PermissionManager:
             tool_input=tool_input,
         )
         self.pending.append(request)
+        coord = self._coordinators.get(claude_agent.id)
+        if coord:
+            coord._set_status(AgentStatus.AWAITING_PERMISSION)
         if self.on_permission_request:
             self.on_permission_request(request)
 
@@ -70,4 +74,5 @@ class PermissionManager:
         coord = self._coordinators.get(request.agent_id)
         if not coord:
             return
+        coord._set_status(AgentStatus.PROCESSING)
         coord.resolve_permission(request.id, granted)

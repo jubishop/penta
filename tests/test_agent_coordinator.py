@@ -86,7 +86,6 @@ class TestCatchUpHistoryAfterRestart:
 
         # Now a new message arrives post-restart
         current = TaggedMessage(sender_label="User", text="new question")
-        coordinator.full_history.append(current)
 
         prompt = coordinator._build_prompt(current)
 
@@ -105,11 +104,11 @@ class TestCatchUpHistoryAfterRestart:
         coordinator.last_prompted_index = 0
 
         first = TaggedMessage(sender_label="User", text="first new")
+        coordinator._build_prompt(first)
         coordinator.full_history.append(first)
-        coordinator._build_prompt(first)  # advances last_prompted_index
+        coordinator.last_prompted_index = len(coordinator.full_history)
 
         second = TaggedMessage(sender_label="User", text="second new")
-        coordinator.full_history.append(second)
         prompt = coordinator._build_prompt(second)
 
         assert "old message" not in prompt
@@ -257,7 +256,6 @@ class TestCancelledStreamRollsBackPromptIndex:
         coordinator.last_prompted_index = len(coordinator.full_history)
 
         check_msg = TaggedMessage(sender_label="User", text="check")
-        coordinator.full_history.append(check_msg)
         check_prompt = coordinator._build_prompt(check_msg)
 
         # If the fix works, Codex's message was included in the second prompt,
@@ -276,8 +274,9 @@ class TestCancelledStreamRollsBackPromptIndex:
 
         # Prime: a user message was already prompted.
         user_msg = TaggedMessage(sender_label="User", text="hello")
+        coordinator._build_prompt(user_msg)
         coordinator.full_history.append(user_msg)
-        coordinator._build_prompt(user_msg)  # advances last_prompted_index
+        coordinator.last_prompted_index = len(coordinator.full_history)
 
         # Two agents respond simultaneously.
         codex_msg = TaggedMessage(sender_label="codex", text="@test-agent Codex here")

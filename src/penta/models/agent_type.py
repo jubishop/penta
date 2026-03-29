@@ -11,12 +11,17 @@ class AgentType(Enum):
     CODEX = "codex"
 
     @property
+    def default_name(self) -> str:
+        """Canonical agent name — used by app.py and the MCP server for identity."""
+        return self.value
+
+    @property
     def display_name(self) -> str:
         return self.value.capitalize()
 
     @property
     def color(self) -> str:
-        return {"claude": "orange", "codex": "green"}[self.value]
+        return {AgentType.CLAUDE: "orange", AgentType.CODEX: "green"}[self]
 
     def find_executable(self) -> str | None:
         env_key = f"PENTA_{self.value.upper()}_PATH"

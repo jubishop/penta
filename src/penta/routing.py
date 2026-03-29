@@ -30,11 +30,13 @@ class MessageRouter:
     def __init__(
         self,
         agents: list[AgentConfig],
+        agents_by_id: dict[UUID, AgentConfig],
         coordinators: dict[UUID, AgentCoordinator],
         conversation: list[Message],
         db: PentaDB,
     ) -> None:
         self._agents = agents
+        self._agents_by_id = agents_by_id
         self._coordinators = coordinators
         self._conversation = conversation
         self._db = db
@@ -133,4 +135,4 @@ class MessageRouter:
         )
 
     def _agent_by_id(self, agent_id: UUID) -> AgentConfig | None:
-        return next((a for a in self._agents if a.id == agent_id), None)
+        return self._agents_by_id.get(agent_id)

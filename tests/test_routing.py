@@ -59,17 +59,25 @@ def conversation() -> list[Message]:
 
 
 @pytest.fixture
-def router(agents, coordinators, conversation, db) -> MessageRouter:
-    return MessageRouter(agents, coordinators, conversation, db)
+def agents_by_id() -> dict[UUID, AgentConfig]:
+    return {}
+
+
+@pytest.fixture
+def router(agents, agents_by_id, coordinators, conversation, db) -> MessageRouter:
+    return MessageRouter(agents, agents_by_id, coordinators, conversation, db)
 
 
 def _register(
     agents: list[AgentConfig],
     coordinators: dict,
     agent: AgentConfig,
+    agents_by_id: dict[UUID, AgentConfig] | None = None,
 ) -> MagicMock:
     """Register an agent and its mock coordinator."""
     agents.append(agent)
+    if agents_by_id is not None:
+        agents_by_id[agent.id] = agent
     coord = _make_mock_coordinator()
     coordinators[agent.id] = coord
     return coord
@@ -194,10 +202,10 @@ class TestRoutingDepthLimit:
 
 class TestAwaitCompletion:
     async def test_completed_message_persisted_to_db(
-        self, router, agents, coordinators, db,
+        self, router, agents, agents_by_id, coordinators, db,
     ):
         claude = _make_agent("claude", AgentType.CLAUDE)
-        _register(agents, coordinators, claude)
+        _register(agents, coordinators, claude, agents_by_id)
 
         msg = Message(
             sender=MessageSender.agent(claude.id),
@@ -211,10 +219,10 @@ class TestAwaitCompletion:
         assert rows[0][2] == "here is my answer"
 
     async def test_cancelled_message_not_persisted(
-        self, router, agents, coordinators, db,
+        self, router, agents, agents_by_id, coordinators, db,
     ):
         claude = _make_agent("claude", AgentType.CLAUDE)
-        _register(agents, coordinators, claude)
+        _register(agents, coordinators, claude, agents_by_id)
 
         msg = Message(
             sender=MessageSender.agent(claude.id),
@@ -229,12 +237,12 @@ class TestAwaitCompletion:
         assert len(rows) == 0
 
     async def test_completed_message_triggers_mention_rerouting(
-        self, router, agents, coordinators,
+        self, router, agents, agents_by_id, coordinators,
     ):
         claude = _make_agent("claude", AgentType.CLAUDE)
         codex = _make_agent("codex", AgentType.CODEX)
-        _register(agents, coordinators, claude)
-        codex_coord = _register(agents, coordinators, codex)
+        _register(agents, coordinators, claude, agents_by_id)
+        codex_coord = _register(agents, coordinators, codex, agents_by_id)
 
         msg = Message(
             sender=MessageSender.agent(claude.id),
