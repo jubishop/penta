@@ -25,14 +25,17 @@ log = logging.getLogger(__name__)
 
 class AppState:
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(
+        self, directory: Path, storage_root: Path | None = None,
+    ) -> None:
         self.directory = directory.resolve()
         self.agents: list[AgentConfig] = []
         self._agents_by_id: dict[UUID, AgentConfig] = {}
         self.coordinators: dict[UUID, AgentCoordinator] = {}
         self.conversation: list[Message] = []
-        self.db = PentaDB(self.directory)
+        self.db = PentaDB(self.directory, storage_root=storage_root)
         self.permission_server: PermissionServer | None = None
+        self._poll_task: asyncio.Task | None = None
 
         self.permissions = PermissionManager(self.agents, self.coordinators)
         self.router = MessageRouter(
@@ -48,11 +51,14 @@ class AppState:
         await self.db.connect()
 
     def setup_permission_server(self, loop: asyncio.AbstractEventLoop) -> None:
-        self.permission_server = PermissionServer(loop)
-        self.permission_server.set_request_callback(
+        server = PermissionServer(loop)
+        server.set_request_callback(
             self.permissions.handle_http_request,
         )
-        self.permission_server.start()
+        if server.start():
+            self.permission_server = server
+        else:
+            log.warning("Permission server unavailable — Claude hooks disabled")
 
     # -- Agent management --
 
@@ -161,7 +167,8 @@ class AppState:
     ) -> asyncio.Task:
         """Begin polling for messages written by external processes."""
         self.db.set_external_message_callback(relay)
-        return asyncio.create_task(self.db.poll_external_messages())
+        self._poll_task = asyncio.create_task(self.db.poll_external_messages())
+        return self._poll_task
 
     async def compact_history(self) -> int:
         """Compact DB and trim in-memory lists to match. Returns count trimmed."""
@@ -175,6 +182,13 @@ class AppState:
         return trimmed
 
     async def shutdown(self) -> None:
+        if self._poll_task:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+            self._poll_task = None
         for coord in self.coordinators.values():
             await coord.shutdown()
         if self.permission_server:

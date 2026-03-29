@@ -10,10 +10,10 @@ from pathlib import Path
 from queue import SimpleQueue
 
 
-def _configure_logging(directory: Path) -> None:
+def _configure_logging(directory: Path, storage_root: Path | None = None) -> None:
     from penta.services.db_schema import db_path_for
 
-    log_dir = db_path_for(directory).parent
+    log_dir = db_path_for(directory, storage_root).parent
     log_dir.mkdir(parents=True, exist_ok=True)
 
     file_handler = RotatingFileHandler(

@@ -22,7 +22,6 @@ class PentaDB:
         self._directory = directory.resolve()
         self._storage_root = storage_root or default_storage_root()
         self._db_path = db_path_for(self._directory, self._storage_root)
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: aiosqlite.Connection | None = None
         self._last_data_version: int = 0
         self._last_seen_id: int = 0
@@ -35,6 +34,7 @@ class PentaDB:
         return self._conn
 
     async def connect(self) -> None:
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(self._db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=5000")
@@ -121,9 +121,15 @@ class PentaDB:
         """Background task: check for external writes every 500ms."""
         while True:
             await asyncio.sleep(0.5)
+            if self._conn is None:
+                log.info("poll_external_messages: DB closed, stopping")
+                return
             try:
                 rows = await self.check_external_changes()
             except Exception:
+                if self._conn is None:
+                    log.info("poll_external_messages: DB closed, stopping")
+                    return
                 log.exception(
                     "poll_external_messages: check failed, will retry"
                 )

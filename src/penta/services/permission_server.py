@@ -22,7 +22,21 @@ class PermissionServer:
         self._loop = loop
         self._pending: dict[str, asyncio.Future[bool]] = {}
         self._on_request: Callable[[str, str, str], None] | None = None
+        self._server: HTTPServer | None = None
+        self.port: int | None = None
+        self._thread: threading.Thread | None = None
 
+    def set_request_callback(
+        self, callback: Callable[[str, str, str], None]
+    ) -> None:
+        """Set callback invoked on asyncio loop when a permission request arrives.
+
+        callback(tool_use_id, tool_name, tool_input_str)
+        """
+        self._on_request = callback
+
+    def start(self) -> bool:
+        """Bind and start the HTTP server. Returns False if bind fails."""
         server_ref = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -68,28 +82,29 @@ class PermissionServer:
             def log_message(self, format: str, *args: object) -> None:
                 log.debug("PermissionServer: %s", format % args)
 
-        self._server = HTTPServer(("127.0.0.1", 0), Handler)
+        try:
+            self._server = HTTPServer(("127.0.0.1", 0), Handler)
+        except OSError:
+            log.warning("Permission server failed to bind — running without hook support")
+            return False
+
         self.port = self._server.server_address[1]
-        self._thread: threading.Thread | None = None
-
-    def set_request_callback(
-        self, callback: Callable[[str, str, str], None]
-    ) -> None:
-        """Set callback invoked on asyncio loop when a permission request arrives.
-
-        callback(tool_use_id, tool_name, tool_input_str)
-        """
-        self._on_request = callback
-
-    def start(self) -> None:
         self._thread = threading.Thread(
             target=self._server.serve_forever, daemon=True
         )
         self._thread.start()
         log.info("Permission server started on port %d", self.port)
+        return True
 
     def stop(self) -> None:
-        self._server.shutdown()
+        # Force-deny all pending permission requests so HTTP handlers unblock
+        for tool_use_id, future in list(self._pending.items()):
+            if not future.done():
+                future.set_result(False)
+        self._pending.clear()
+
+        if self._server:
+            self._server.shutdown()
         if self._thread:
             self._thread.join(timeout=2)
         log.info("Permission server stopped")
@@ -101,8 +116,14 @@ class PermissionServer:
             future.set_result(granted)
 
     @property
+    def is_running(self) -> bool:
+        return self._server is not None and self._thread is not None
+
+    @property
     def hook_settings_json(self) -> str:
         """JSON string to pass as Claude CLI's --settings flag."""
+        if not self.is_running or self.port is None:
+            return json.dumps({})
         return json.dumps({
             "hooks": {
                 "PreToolUse": [{
