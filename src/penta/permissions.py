@@ -45,7 +45,7 @@ class PermissionManager:
         self.pending.append(request)
         coord = self._coordinators.get(claude_agent.id)
         if coord:
-            coord._set_status(AgentStatus.AWAITING_PERMISSION)
+            coord.set_status(AgentStatus.AWAITING_PERMISSION)
         if self.on_permission_request:
             self.on_permission_request(request)
 
@@ -74,5 +74,5 @@ class PermissionManager:
         coord = self._coordinators.get(request.agent_id)
         if not coord:
             return
-        coord._set_status(AgentStatus.PROCESSING)
+        coord.set_status(AgentStatus.PROCESSING)
         coord.resolve_permission(request.id, granted)

@@ -171,15 +171,7 @@ class AppState:
         if trimmed:
             del self.conversation[:trimmed]
             for coord in self.coordinators.values():
-                coord_trimmed = max(0, len(coord.full_history) - limit)
-                if coord_trimmed:
-                    del coord.full_history[:coord_trimmed]
-                    coord.last_prompted_index = max(
-                        0, coord.last_prompted_index - coord_trimmed,
-                    )
-                    coord._pre_prompt_index = max(
-                        0, coord._pre_prompt_index - coord_trimmed,
-                    )
+                coord.compact(limit)
         return trimmed
 
     async def shutdown(self) -> None:
