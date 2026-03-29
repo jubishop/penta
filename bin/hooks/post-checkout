@@ -4,7 +4,13 @@
 # Only run on branch checkouts (flag=1) and only if .venv doesn't exist
 
 if [ "$3" = "1" ] && [ ! -d ".venv" ]; then
-    echo "Setting up .venv for worktree..."
-    python3 -m venv --upgrade-deps .venv && .venv/bin/pip install -q -e ".[dev]"
-    echo "Done. Test with: .venv/bin/penta ~/Desktop/penta"
+    echo "Setting up .venv in background (run '.venv/bin/penta' once ready)..."
+    WORKTREE_DIR="$(pwd)"
+    (
+        cd "$WORKTREE_DIR" &&
+        python3 -m venv --upgrade-deps .venv &&
+        .venv/bin/pip install -q -e ".[dev]" &&
+        echo -e "\n✅ .venv ready in $WORKTREE_DIR"
+    ) &
+    disown
 fi
