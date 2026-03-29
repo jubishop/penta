@@ -360,6 +360,82 @@ class TestSendWhileStreamingWaitsForCleanup:
         await asyncio.sleep(0)
 
 
+class TestToolUseNeverLeaksIntoBody:
+    """Regression: tool use indicators must always go to thinking_text,
+    even when text has already been emitted to the message body."""
+
+    async def test_tool_use_after_text_stays_in_thinking(
+        self, memory_db: PentaDB,
+    ):
+        """Text → tool → text: the tool line must land in thinking_text,
+        not response.text."""
+        fake = FakeAgentService()
+        fake.enqueue_events([
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text="Here's my analysis."),
+            StreamEvent(type=StreamEventType.TOOL_USE_STARTED, tool_name="Edit"),
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text="\n\nDone."),
+            StreamEvent(type=StreamEventType.DONE),
+        ])
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="fix the bug")
+        response = coord.send(tagged, conversation)
+        await response.wait_for_completion()
+
+        assert "Using Edit" not in response.text
+        assert "Using Edit" in response.thinking_text
+        assert "Here's my analysis." in response.text
+        assert "Done." in response.text
+
+    async def test_tool_use_before_text_stays_in_thinking(
+        self, memory_db: PentaDB,
+    ):
+        """Tool → text: tool line in thinking, text in body."""
+        fake = FakeAgentService()
+        fake.enqueue_events([
+            StreamEvent(type=StreamEventType.TOOL_USE_STARTED, tool_name="Read"),
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text="Found it."),
+            StreamEvent(type=StreamEventType.DONE),
+        ])
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="check")
+        response = coord.send(tagged, conversation)
+        await response.wait_for_completion()
+
+        assert "Using Read" not in response.text
+        assert "Using Read" in response.thinking_text
+        assert response.text == "Found it."
+
+    async def test_multiple_tools_between_text_blocks(
+        self, memory_db: PentaDB,
+    ):
+        """Text → tool → tool → text: both tool lines in thinking."""
+        fake = FakeAgentService()
+        fake.enqueue_events([
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text="Let me check."),
+            StreamEvent(type=StreamEventType.TOOL_USE_STARTED, tool_name="Grep"),
+            StreamEvent(type=StreamEventType.TOOL_USE_STARTED, tool_name="Read"),
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text="\n\nAll good."),
+            StreamEvent(type=StreamEventType.DONE),
+        ])
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="review")
+        response = coord.send(tagged, conversation)
+        await response.wait_for_completion()
+
+        assert "Using Grep" not in response.text
+        assert "Using Read" not in response.text
+        assert "Using Grep" in response.thinking_text
+        assert "Using Read" in response.thinking_text
+        assert "Let me check." in response.text
+        assert "All good." in response.text
+
+
 class TestServiceFailureDoesNotWedgeUI:
     """If the service raises an unexpected exception, the message must still
     be marked complete and the UI cleaned up."""
