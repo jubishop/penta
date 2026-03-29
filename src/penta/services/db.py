@@ -28,33 +28,40 @@ class PentaDB:
         self._last_seen_id: int = 0
         self._on_external_message: Callable[[str, str], None] | None = None
 
+    @property
+    def _db(self) -> aiosqlite.Connection:
+        if self._conn is None:
+            raise SystemExit("Fatal: database not connected")
+        return self._conn
+
     async def connect(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
-        await self._conn.execute("PRAGMA journal_mode=WAL")
-        await self._conn.execute("PRAGMA busy_timeout=5000")
-        await self._conn.executescript(CREATE_TABLES_SQL)
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA busy_timeout=5000")
+        await self._db.executescript(CREATE_TABLES_SQL)
         self._last_data_version = await self._get_data_version()
         self._last_seen_id = await self._get_max_id()
 
     async def close(self) -> None:
         if self._conn:
             await self._conn.close()
+            self._conn = None
 
     # -- Messages --
 
     async def append_message(self, sender: str, text: str) -> int:
-        cur = await self._conn.execute(
+        cur = await self._db.execute(
             "INSERT INTO messages (sender, text, timestamp) VALUES (?, ?, ?)",
             (sender, text, datetime.now(timezone.utc).isoformat()),
         )
-        await self._conn.commit()
+        await self._db.commit()
         self._last_seen_id = cur.lastrowid
         self._last_data_version = await self._get_data_version()
         return cur.lastrowid
 
     async def get_messages(self, limit: int = 2000) -> list[tuple[int, str, str, str]]:
         """Returns (id, sender, text, timestamp) tuples, oldest first."""
-        cur = await self._conn.execute(
+        cur = await self._db.execute(
             "SELECT id, sender, text, timestamp FROM messages "
             "ORDER BY id DESC LIMIT ?",
             (limit,),
@@ -68,7 +75,7 @@ class PentaDB:
         if dv == self._last_data_version:
             return []
         self._last_data_version = dv
-        cur = await self._conn.execute(
+        cur = await self._db.execute(
             "SELECT id, sender, text, timestamp FROM messages WHERE id > ? ORDER BY id",
             (self._last_seen_id,),
         )
@@ -79,24 +86,24 @@ class PentaDB:
 
     async def compact(self, max_messages: int | None = None) -> None:
         limit = max_messages or self.MAX_MESSAGES
-        await self._conn.execute(
+        await self._db.execute(
             "DELETE FROM messages WHERE id NOT IN "
             "(SELECT id FROM messages ORDER BY id DESC LIMIT ?)",
             (limit,),
         )
-        await self._conn.commit()
+        await self._db.commit()
 
     # -- Sessions --
 
     async def save_session(self, agent_name: str, session_id: str) -> None:
-        await self._conn.execute(
+        await self._db.execute(
             "INSERT OR REPLACE INTO sessions (agent_name, session_id) VALUES (?, ?)",
             (agent_name, session_id),
         )
-        await self._conn.commit()
+        await self._db.commit()
 
     async def load_session(self, agent_name: str) -> str | None:
-        cur = await self._conn.execute(
+        cur = await self._db.execute(
             "SELECT session_id FROM sessions WHERE agent_name = ?",
             (agent_name,),
         )
@@ -128,11 +135,11 @@ class PentaDB:
     # -- Internal --
 
     async def _get_data_version(self) -> int:
-        cur = await self._conn.execute("PRAGMA data_version")
+        cur = await self._db.execute("PRAGMA data_version")
         row = await cur.fetchone()
         return row[0]
 
     async def _get_max_id(self) -> int:
-        cur = await self._conn.execute("SELECT MAX(id) FROM messages")
+        cur = await self._db.execute("SELECT MAX(id) FROM messages")
         row = await cur.fetchone()
         return row[0] or 0
