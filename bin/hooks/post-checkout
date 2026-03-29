@@ -1,0 +1,10 @@
+#!/bin/bash
+# Auto-create .venv for new worktrees
+# post-checkout receives: prev_head new_head is_branch_checkout
+# Only run on branch checkouts (flag=1) and only if .venv doesn't exist
+
+if [ "$3" = "1" ] && [ ! -d ".venv" ]; then
+    echo "Setting up .venv for worktree..."
+    python3 -m venv --upgrade-deps .venv && .venv/bin/pip install -q -e ".[dev]"
+    echo "Done. Test with: .venv/bin/penta ~/Desktop/penta"
+fi
