@@ -20,6 +20,24 @@ from penta.widgets.status_indicator import ExternalIndicator, StatusIndicator
 log = logging.getLogger(__name__)
 
 
+class _MessageTracker:
+    """Owns widget registry, streaming state, and render progress."""
+
+    def __init__(self) -> None:
+        self.widgets: dict[UUID, ChatMessage] = {}
+        self.streaming: dict[UUID, Message] = {}  # agent_id -> Message
+        self.rendered_up_to: int = 0
+
+    def register(self, msg: Message, widget: ChatMessage) -> None:
+        self.widgets[msg.id] = widget
+        if msg.is_streaming and msg.sender.is_agent and msg.sender.agent_id:
+            self.streaming[msg.sender.agent_id] = msg
+
+    def complete_stream(self, message: Message) -> None:
+        if message.sender.is_agent and message.sender.agent_id:
+            self.streaming.pop(message.sender.agent_id, None)
+
+
 class PentaApp(App):
     CSS_PATH = "penta.tcss"
     TITLE = "Penta"
@@ -34,10 +52,8 @@ class PentaApp(App):
         super().__init__(**kwargs)
         self._directory = directory
         self._state: AppState | None = None
-        self._message_widgets: dict[UUID, ChatMessage] = {}
+        self._messages = _MessageTracker()
         self._status_indicators: dict[UUID, StatusIndicator] = {}
-        self._streaming_messages: dict[UUID, Message] = {}  # agent_id -> Message
-        self._last_rendered_index: int = 0
         self._poll_task: asyncio.Task | None = None
 
     def compose(self) -> ComposeResult:
@@ -80,8 +96,8 @@ class PentaApp(App):
         for msg in state.conversation:
             name, agent_type = self._sender_info(msg)
             widget = chat_room.add_message(msg, name, agent_type)
-            self._message_widgets[msg.id] = widget
-        self._last_rendered_index = len(state.conversation)
+            self._messages.register(msg, widget)
+        self._messages.rendered_up_to = len(state.conversation)
 
         # Start external message polling
         self._poll_task = state.start_external_polling(
@@ -91,7 +107,7 @@ class PentaApp(App):
         # Compact on startup
         trimmed = await state.compact_history()
         if trimmed:
-            self._last_rendered_index = len(state.conversation)
+            self._messages.rendered_up_to = len(state.conversation)
 
     async def on_unmount(self) -> None:
         if self._poll_task:
@@ -146,9 +162,9 @@ class PentaApp(App):
 
     def _apply_text_delta(self, agent_id: UUID) -> None:
         self._render_new_messages()
-        msg = self._streaming_messages.get(agent_id)
+        msg = self._messages.streaming.get(agent_id)
         if msg:
-            widget = self._message_widgets.get(msg.id)
+            widget = self._messages.widgets.get(msg.id)
             if widget:
                 widget.thinking_text = msg.thinking_text
                 widget.body_text = msg.text
@@ -157,13 +173,12 @@ class PentaApp(App):
         chat_room.scroll_end(animate=False)
 
     def _apply_stream_complete(self, message: Message) -> None:
-        widget = self._message_widgets.get(message.id)
+        widget = self._messages.widgets.get(message.id)
         if widget:
             widget.thinking_text = message.thinking_text
             widget.body_text = message.text
             widget.is_streaming = False
-        if message.sender.is_agent and message.sender.agent_id:
-            self._streaming_messages.pop(message.sender.agent_id, None)
+        self._messages.complete_stream(message)
 
     def _show_permission_dialog(self, request: PermissionRequest) -> None:
         # Find the streaming message widget for this agent and mount the dialog
@@ -175,7 +190,7 @@ class PentaApp(App):
                 and msg.sender.agent_id == request.agent_id
                 and msg.is_streaming
             ):
-                widget = self._message_widgets.get(msg.id)
+                widget = self._messages.widgets.get(msg.id)
                 if widget:
                     dialog = PermissionDialog(
                         request_id=request.id,
@@ -205,15 +220,13 @@ class PentaApp(App):
             return
         conversation = self._state.conversation
         chat_room = self.query_one("#chat-room", ChatRoom)
-        for i in range(self._last_rendered_index, len(conversation)):
+        for i in range(self._messages.rendered_up_to, len(conversation)):
             msg = conversation[i]
-            if msg.id not in self._message_widgets:
+            if msg.id not in self._messages.widgets:
                 name, agent_type = self._sender_info(msg)
                 widget = chat_room.add_message(msg, name, agent_type)
-                self._message_widgets[msg.id] = widget
-                if msg.is_streaming and msg.sender.is_agent and msg.sender.agent_id:
-                    self._streaming_messages[msg.sender.agent_id] = msg
-        self._last_rendered_index = len(conversation)
+                self._messages.register(msg, widget)
+        self._messages.rendered_up_to = len(conversation)
 
     def _sender_info(self, message: Message) -> tuple[str, AgentType | None]:
         """Return (display_name, agent_type) for a message sender."""
