@@ -30,9 +30,7 @@ class CodexService(CliAgentService):
     ) -> list[str]:
         effective_prompt = self._effective_prompt(prompt, system_prompt)
 
-        # -a and -s are top-level codex flags; they must precede the
-        # exec subcommand or exec-resume will reject them.
-        args = ["-a", "never", "-s", "workspace-write"]
+        args = ["--dangerously-bypass-approvals-and-sandbox"]
 
         if session_id:
             args += ["exec", "resume", session_id]

@@ -4,7 +4,6 @@ import logging
 from typing import AsyncIterator
 
 from penta.services.agent_service import CliAgentService, StreamEvent, StreamEventType
-from penta.services.permission_server import PermissionServer
 
 log = logging.getLogger(__name__)
 
@@ -16,14 +15,12 @@ class ClaudeService(CliAgentService):
         self,
         executable: str | None = None,
         model: str | None = None,
-        permission_server: PermissionServer | None = None,
     ) -> None:
         super().__init__(
             agent_name="Claude",
             executable=executable,
             model=model,
         )
-        self._permission_server = permission_server
         # Per-send parser state
         self._seen_session_id = False
         self._has_emitted_text = False
@@ -38,16 +35,14 @@ class ClaudeService(CliAgentService):
         session_id: str | None,
         system_prompt: str | None,
     ) -> list[str]:
-        args = ["-p", "--verbose", "--output-format", "stream-json", "--include-partial-messages"]
+        args = ["-p", "--verbose", "--output-format", "stream-json",
+                "--include-partial-messages", "--dangerously-skip-permissions"]
 
         if self._model:
             args += ["--model", self._model]
 
         if system_prompt:
             args += ["--append-system-prompt", system_prompt]
-
-        if self._permission_server:
-            args += ["--settings", self._permission_server.hook_settings_json]
 
         if session_id:
             args += ["--resume", session_id]

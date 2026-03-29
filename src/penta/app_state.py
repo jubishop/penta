@@ -13,12 +13,9 @@ from penta.models.agent_status import AgentStatus
 from penta.models.agent_type import AgentType
 from penta.models.message import Message
 from penta.models.message_sender import MessageSender
-from penta.models.permission_request import PermissionRequest
 from penta.models.tagged_message import TaggedMessage
-from penta.permissions import PermissionManager
 from penta.routing import MessageRouter
 from penta.services.db import PentaDB
-from penta.services.permission_server import PermissionServer
 
 log = logging.getLogger(__name__)
 
@@ -34,10 +31,8 @@ class AppState:
         self.coordinators: dict[UUID, AgentCoordinator] = {}
         self.conversation: list[Message] = []
         self.db = PentaDB(self.directory, storage_root=storage_root)
-        self.permission_server: PermissionServer | None = None
         self._poll_task: asyncio.Task | None = None
 
-        self.permissions = PermissionManager(self.agents, self.coordinators)
         self.router = MessageRouter(
             self.agents, self._agents_by_id, self.coordinators, self.conversation, self.db,
         )
@@ -49,16 +44,6 @@ class AppState:
 
     async def connect(self) -> None:
         await self.db.connect()
-
-    def setup_permission_server(self, loop: asyncio.AbstractEventLoop) -> None:
-        server = PermissionServer(loop)
-        server.set_request_callback(
-            self.permissions.handle_http_request,
-        )
-        if server.start():
-            self.permission_server = server
-        else:
-            log.warning("Permission server unavailable — Claude hooks disabled")
 
     # -- Agent management --
 
@@ -80,7 +65,6 @@ class AppState:
             working_dir=self.directory,
             db=self.db,
             executable=executable,
-            permission_server=self.permission_server,
             other_agent_names=other_names,
             session_id=session_id,
         )
@@ -125,17 +109,6 @@ class AppState:
 
     def receive_external_message(self, sender_name: str, text: str) -> None:
         self.router.receive_external_message(sender_name, text)
-
-    # -- Delegated to permissions --
-
-    def approve_permission(self, request_id: str) -> None:
-        self.permissions.approve(request_id)
-
-    def deny_permission(self, request_id: str) -> None:
-        self.permissions.deny(request_id)
-
-    def pending_permission_for(self, agent_id: UUID) -> PermissionRequest | None:
-        return self.permissions.pending_for(agent_id)
 
     # -- Lifecycle --
 
@@ -191,8 +164,6 @@ class AppState:
             self._poll_task = None
         for coord in self.coordinators.values():
             await coord.shutdown()
-        if self.permission_server:
-            self.permission_server.stop()
         await self.db.close()
 
     # -- Callback relays --
