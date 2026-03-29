@@ -138,7 +138,10 @@ class ChatMessage(Vertical):
             else:
                 fold.display = False
         except NoMatches:
-            log.debug("watch_thinking_text: widget not ready")
+            log.debug(
+                "watch_thinking_text: widget not ready (msg=%s, mounted=%s, len=%d)",
+                self._message.id, self._is_mounted, len(value),
+            )
 
     def watch_body_text(self, value: str) -> None:
         try:
@@ -149,17 +152,30 @@ class ChatMessage(Vertical):
                 md = self.query_one(".message-body", Markdown)
                 md.update(value or "")
         except NoMatches:
-            log.debug("watch_body_text: widget not ready")
+            log.debug(
+                "watch_body_text: widget not ready (msg=%s, mounted=%s, streaming=%s, len=%d)",
+                self._message.id, self._is_mounted, self.is_streaming, len(value),
+            )
 
     def watch_is_cancelled(self, value: bool) -> None:
-        if value and self.body_text:
-            self.mount(Static("[interrupted]", classes="cancelled-label"))
+        if value:
+            log.debug(
+                "watch_is_cancelled: msg=%s, mounted=%s, body_len=%d",
+                self._message.id, self._is_mounted, len(self.body_text),
+            )
+            if self.body_text:
+                self.mount(Static("[interrupted]", classes="cancelled-label"))
 
     def watch_is_streaming(self, value: bool) -> None:
         if not value:
+            log.debug(
+                "watch_is_streaming: finishing (msg=%s, mounted=%s, body_len=%d, cancelled=%s)",
+                self._message.id, self._is_mounted, len(self.body_text), self.is_cancelled,
+            )
             if not self.body_text:
                 # Hide the entire widget when streaming ends with no content
                 # (e.g. cancelled responses).
+                log.debug("watch_is_streaming: hiding empty message widget (msg=%s)", self._message.id)
                 self.display = False
                 return
             # Streaming finished — swap to rendered Markdown.
@@ -169,7 +185,10 @@ class ChatMessage(Vertical):
                 md.update(self.body_text or "")
                 md.display = True
             except NoMatches:
-                log.debug("watch_is_streaming: widget not ready")
+                log.warning(
+                    "watch_is_streaming: children not composed yet (msg=%s, mounted=%s)",
+                    self._message.id, self._is_mounted,
+                )
             # Collapse thinking now that the response is complete.
             try:
                 fold = self.query_one(".thinking-fold", Collapsible)
