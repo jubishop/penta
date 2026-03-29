@@ -59,7 +59,7 @@ class ChatMessage(Vertical):
 
     thinking_text: reactive[str] = reactive("")
     body_text: reactive[str] = reactive("")
-    is_streaming: reactive[bool] = reactive(False)
+    is_streaming: reactive[bool] = reactive(False, init=False)
 
     def __init__(
         self,
