@@ -41,6 +41,7 @@ class MessageRouter:
         self._conversation = conversation
         self._db = db
         self.external_participants: set[str] = set()
+        self._pending_tasks: set[asyncio.Task] = set()
 
         # Callbacks for the TUI layer
         self.on_external_message: Callable[[str, str], None] | None = None
@@ -114,6 +115,8 @@ class MessageRouter:
                     self._await_completion(msg, agent.id, hops)
                 )
                 task.add_done_callback(log_task_error)
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
             else:
                 coord.inject_context(tagged)
 
@@ -133,6 +136,11 @@ class MessageRouter:
             tagged, excluding=agent_id, mentioned=mentioned,
             mode=RouteMode.MENTIONED_ONLY, hops=hops + 1,
         )
+
+    async def drain(self) -> None:
+        """Wait until all routing tasks (including cascaded ones) are done."""
+        while self._pending_tasks:
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
 
     def _agent_by_id(self, agent_id: UUID) -> AgentConfig | None:
         return self._agents_by_id.get(agent_id)

@@ -1,69 +1,57 @@
-"""Tests for AgentCoordinator cancellation behaviour."""
+"""Tests for AgentCoordinator behaviour."""
 
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import AsyncIterator
 from uuid import uuid4
 
 import pytest
 
 from penta.coordinators.agent_coordinator import AgentCoordinator
 from penta.models import AgentConfig, AgentStatus, AgentType, Message, TaggedMessage
-from penta.services.agent_service import AgentService, StreamEvent, StreamEventType
+from penta.services.agent_service import StreamEvent, StreamEventType
 from penta.services.db import PentaDB
+
+from .fakes import FakeAgentService
 
 
 # -- Helpers ------------------------------------------------------------------
 
 
-class HangingService(AgentService):
-    """Yields one text delta then blocks forever (until cancelled)."""
-
-    async def send(
-        self, prompt: str, session_id: str | None, working_dir: Path,
-        system_prompt: str | None = None,
-    ) -> AsyncIterator[StreamEvent]:
-        yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="partial")
-        # Block indefinitely so the caller can cancel us.
-        await asyncio.Event().wait()
-
-    async def cancel(self) -> None:
-        pass
-
-    async def shutdown(self) -> None:
-        pass
-
-
-# -- Fixtures -----------------------------------------------------------------
-
-
-@pytest.fixture
-async def db(tmp_path: Path) -> PentaDB:
-    db = PentaDB(tmp_path / "test-project", storage_root=tmp_path)
-    await db.connect()
-    yield db
-    await db.close()
-
-
-@pytest.fixture
-async def coordinator(db: PentaDB) -> AgentCoordinator:
+def _make_coordinator(db: PentaDB, fake: FakeAgentService) -> AgentCoordinator:
     config = AgentConfig(
         id=uuid4(),
         name="test-agent",
         type=AgentType.CLAUDE,
         status=AgentStatus.IDLE,
     )
-    coord = AgentCoordinator(
+    return AgentCoordinator(
         config=config,
         working_dir=Path("/tmp"),
         db=db,
         other_agent_names=["other"],
+        service=fake,
     )
-    # Swap in the hanging service so we can control cancellation.
-    coord.service = HangingService()
-    return coord
+
+
+async def _let_task_start() -> None:
+    """Yield to the event loop so a just-created task can advance to its
+    first await (e.g. the hang point in FakeAgentService)."""
+    await asyncio.sleep(0)
+
+
+# -- Fixtures -----------------------------------------------------------------
+
+
+@pytest.fixture
+def fake() -> FakeAgentService:
+    return FakeAgentService()
+
+
+@pytest.fixture
+def coordinator(memory_db: PentaDB, fake: FakeAgentService) -> AgentCoordinator:
+    return _make_coordinator(memory_db, fake)
 
 
 # -- Tests --------------------------------------------------------------------
@@ -73,7 +61,6 @@ class TestFirstMessageNoCatchUp:
     """On a fresh chat with no history, the prompt should contain only the
     current message — no '[Messages since your last response:]' header."""
 
-    @pytest.mark.asyncio
     async def test_fresh_chat_no_catchup_header(self, coordinator: AgentCoordinator):
         """First message ever sent should not include catch-up framing."""
         current = TaggedMessage(sender_label="User", text="hello")
@@ -88,20 +75,14 @@ class TestCatchUpHistoryAfterRestart:
     """After load_chat_history(), the first prompt should replay all prior
     messages as catch-up context (last_prompted_index=0)."""
 
-    @pytest.mark.asyncio
     async def test_first_prompt_includes_full_history(self, coordinator: AgentCoordinator):
-        """Simulates a restart: hydrate history, then build a prompt.
-        The prompt should contain catch-up lines from all prior messages."""
-        # Simulate hydrated history (what load_chat_history does)
         coordinator.full_history = [
             TaggedMessage(sender_label="User", text="first message"),
             TaggedMessage(sender_label="other", text="reply from other"),
         ]
-        coordinator.last_prompted_index = 0  # the fix
+        coordinator.last_prompted_index = 0
 
-        # Now a new message arrives post-restart
         current = TaggedMessage(sender_label="User", text="new question")
-
         prompt = coordinator._build_prompt(current)
 
         assert "[Messages since your last response:]" in prompt
@@ -109,10 +90,7 @@ class TestCatchUpHistoryAfterRestart:
         assert "reply from other" in prompt
         assert "new question" in prompt
 
-    @pytest.mark.asyncio
     async def test_second_prompt_does_not_repeat_catchup(self, coordinator: AgentCoordinator):
-        """After the first post-restart prompt, subsequent prompts should
-        NOT re-include already-seen history."""
         coordinator.full_history = [
             TaggedMessage(sender_label="User", text="old message"),
         ]
@@ -134,47 +112,51 @@ class TestCatchUpHistoryAfterRestart:
 class TestCancelledStreamIsNotTreatedAsSuccess:
     """Regression: cancelling a stream must NOT persist, route, or callback."""
 
-    @pytest.mark.asyncio
-    async def test_cancelled_response_is_flagged(self, coordinator: AgentCoordinator):
+    async def test_cancelled_response_is_flagged(
+        self, coordinator: AgentCoordinator, fake: FakeAgentService,
+    ):
         """A cancelled stream should set is_cancelled on the response."""
+        fake.enqueue_hang()
+        fake.enqueue_hang()
+
         conversation: list[Message] = []
         tagged = TaggedMessage(sender_label="User", text="hello")
 
         response = coordinator.send(tagged, conversation)
-        # Let the stream task start and receive the first delta.
-        await asyncio.sleep(0.05)
+        await _let_task_start()
         assert response.text == "partial"
 
         # Cancel by sending a new message (same as the real flow).
         tagged2 = TaggedMessage(sender_label="User", text="new message")
-        response2 = coordinator.send(tagged2, conversation)
-        # Wait for the old task to finish its CancelledError handler.
-        await asyncio.sleep(0.05)
+        coordinator.send(tagged2, conversation)
+        await response.wait_for_completion()
 
         assert response.is_cancelled is True
         assert response.is_streaming is False
 
         # Clean up second task.
         coordinator._current_task.cancel()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
 
-    @pytest.mark.asyncio
     async def test_cancelled_stream_not_added_to_history(
-        self, coordinator: AgentCoordinator
+        self, coordinator: AgentCoordinator, fake: FakeAgentService,
     ):
         """Cancelled response must NOT be appended to full_history."""
+        fake.enqueue_hang()
+        fake.enqueue_hang()
+
         conversation: list[Message] = []
         tagged = TaggedMessage(sender_label="User", text="hello")
 
-        coordinator.send(tagged, conversation)
-        await asyncio.sleep(0.05)
+        response = coordinator.send(tagged, conversation)
+        await _let_task_start()
 
         history_before = len(coordinator.full_history)
 
         # Cancel via a new send.
         tagged2 = TaggedMessage(sender_label="User", text="new")
         coordinator.send(tagged2, conversation)
-        await asyncio.sleep(0.05)
+        await response.wait_for_completion()
 
         # Only the new user message should have been added, not a cancelled agent reply.
         agent_replies = [
@@ -185,106 +167,96 @@ class TestCancelledStreamIsNotTreatedAsSuccess:
         assert agent_replies == []
 
         coordinator._current_task.cancel()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
 
-    @pytest.mark.asyncio
     async def test_cancelled_stream_fires_callback_with_cancelled_flag(
-        self, coordinator: AgentCoordinator
+        self, coordinator: AgentCoordinator, fake: FakeAgentService,
     ):
         """on_stream_complete MUST fire for cancelled streams (UI cleanup)
         but the message should carry is_cancelled=True."""
+        fake.enqueue_hang()
+        fake.enqueue_hang()
+
         completed: list[Message] = []
         coordinator.on_stream_complete = lambda msg, _aid: completed.append(msg)
 
         conversation: list[Message] = []
         tagged = TaggedMessage(sender_label="User", text="hello")
-        coordinator.send(tagged, conversation)
-        await asyncio.sleep(0.05)
+        response = coordinator.send(tagged, conversation)
+        await _let_task_start()
 
         # Cancel.
         tagged2 = TaggedMessage(sender_label="User", text="new")
         coordinator.send(tagged2, conversation)
-        await asyncio.sleep(0.05)
+        await response.wait_for_completion()
 
         assert len(completed) == 1, "on_stream_complete must fire so the UI can clear streaming state"
         assert completed[0].is_cancelled is True
 
         coordinator._current_task.cancel()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
 
 
 class TestCancelledStreamRollsBackPromptIndex:
     """Regression: when two agents finish simultaneously and both mention the
     same target agent, the second send() cancels the first stream.  The
     replacement prompt must include messages from the cancelled stream so the
-    agent doesn't miss context (e.g. "Now we just need @codex to weigh in"
-    when Codex already responded)."""
+    agent doesn't miss context."""
 
-    @pytest.mark.asyncio
     async def test_cancelled_send_does_not_skip_messages(
-        self, coordinator: AgentCoordinator
+        self, coordinator: AgentCoordinator, fake: FakeAgentService,
     ):
-        """Simulate: user message (hop 0) → agent responds → two agents
-        both mention this agent nearly simultaneously.  The second send()
-        cancels the first, but the replacement prompt must still contain the
-        first agent's message."""
+        fake.enqueue_hang()
+        fake.enqueue_hang()
+        fake.enqueue_hang()
+
         conversation: list[Message] = []
 
         # Seed: a user message was already prompted (hop 0).
         user_msg = TaggedMessage(sender_label="User", text="plan a trip")
-        coordinator.send(user_msg, conversation)
-        await asyncio.sleep(0.05)
-        # Pretend the stream completed normally so last_prompted_index advances.
+        resp0 = coordinator.send(user_msg, conversation)
+        await _let_task_start()
         coordinator._current_task.cancel()
-        await asyncio.sleep(0.05)
+        await resp0.wait_for_completion()
         # Manually advance as if the stream finished (normal completion path).
         coordinator.last_prompted_index = len(coordinator.full_history)
         coordinator._pre_prompt_index = coordinator.last_prompted_index
 
-        # Now two agents finish nearly simultaneously and both mention us.
+        # Now two agents respond simultaneously and both mention us.
         codex_msg = TaggedMessage(sender_label="codex", text="@test-agent here's my take")
         other_msg = TaggedMessage(sender_label="other", text="@test-agent I agree")
 
         # First send: Codex's message arrives.
         resp1 = coordinator.send(codex_msg, conversation)
-        await asyncio.sleep(0.05)  # Let stream start
+        await _let_task_start()
 
         # Second send: other agent's message arrives, cancelling Codex's stream.
-        resp2 = coordinator.send(other_msg, conversation)
-        await asyncio.sleep(0.05)
+        coordinator.send(other_msg, conversation)
+        await resp1.wait_for_completion()
 
-        # The cancelled response must be flagged.
         assert resp1.is_cancelled is True
 
-        # Critical assertion: the prompt that was built for the second send
-        # must include Codex's message in the catch-up section.
-        # We can verify by checking the prompt that was passed to the service.
-        # Rebuild what _build_prompt would have produced for the second send:
-        # Since the service is a HangingService, we can inspect the prompt
-        # by looking at what _build_prompt would return.  Instead, let's
-        # verify the index state: last_prompted_index should cover both.
-        #
-        # More directly: build a third prompt and confirm Codex's message
+        # Verify: build a third prompt and confirm Codex's message
         # is NOT in the catch-up (meaning it WAS included in the second prompt).
         coordinator._current_task.cancel()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
         coordinator.last_prompted_index = len(coordinator.full_history)
 
         check_msg = TaggedMessage(sender_label="User", text="check")
         check_prompt = coordinator._build_prompt(check_msg)
 
-        # If the fix works, Codex's message was included in the second prompt,
-        # so it should NOT appear in this follow-up prompt.
         assert "@test-agent here's my take" not in check_prompt
         assert "@test-agent I agree" not in check_prompt
         assert "check" in check_prompt
 
-    @pytest.mark.asyncio
     async def test_replacement_prompt_contains_cancelled_message(
-        self, coordinator: AgentCoordinator
+        self, coordinator: AgentCoordinator, fake: FakeAgentService,
     ):
         """Directly verify the prompt text of the replacement send includes
         the message from the cancelled stream."""
+        fake.enqueue_hang()
+        fake.enqueue_hang()
+
         conversation: list[Message] = []
 
         # Prime: a user message was already prompted.
@@ -298,12 +270,10 @@ class TestCancelledStreamRollsBackPromptIndex:
         other_msg = TaggedMessage(sender_label="other", text="@test-agent Other here")
 
         # First send (Codex) — starts streaming.
-        coordinator.send(codex_msg, conversation)
-        await asyncio.sleep(0.05)
+        resp1 = coordinator.send(codex_msg, conversation)
+        await _let_task_start()
 
-        # Capture prompt index before second send.
-        # Second send (other) — cancels the first.
-        # We need to capture the prompt.  Monkey-patch _build_prompt to record it.
+        # Capture prompt for the second send.
         prompts: list[str] = []
         original_build = coordinator._build_prompt
 
@@ -314,7 +284,7 @@ class TestCancelledStreamRollsBackPromptIndex:
 
         coordinator._build_prompt = capturing_build  # type: ignore[assignment]
         coordinator.send(other_msg, conversation)
-        await asyncio.sleep(0.05)
+        await resp1.wait_for_completion()
 
         assert len(prompts) == 1
         replacement_prompt = prompts[0]
@@ -324,89 +294,44 @@ class TestCancelledStreamRollsBackPromptIndex:
             "Codex's message was lost — the cancelled stream advanced "
             "last_prompted_index past it"
         )
-        # And the current message must be there too.
         assert "Other here" in replacement_prompt
 
         coordinator._current_task.cancel()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
 
 
 class TestShutdownAwaitsCancelTask:
     """Regression: shutdown() must wait for the in-flight cancel task to finish
     before calling service.shutdown(), otherwise cancel and shutdown race."""
 
-    @pytest.mark.asyncio
-    async def test_cancel_completes_before_shutdown(self, db: PentaDB):
-        class SlowCancelService(AgentService):
-            def __init__(self):
-                self.order: list[str] = []
-
-            async def send(self, prompt, session_id, working_dir, system_prompt=None):
-                yield StreamEvent(type=StreamEventType.DONE)
-
-            async def cancel(self):
-                await asyncio.sleep(0.05)
-                self.order.append("cancel")
-
-            async def shutdown(self):
-                self.order.append("shutdown")
-
-        config = AgentConfig(
-            id=uuid4(), name="slow-cancel", type=AgentType.CLAUDE,
-            status=AgentStatus.IDLE,
-        )
-        coord = AgentCoordinator(
-            config=config, working_dir=Path("/tmp"), db=db,
-            other_agent_names=[],
-        )
-        service = SlowCancelService()
-        coord.service = service
+    async def test_cancel_completes_before_shutdown(
+        self, memory_db: PentaDB,
+    ):
+        fake = FakeAgentService()
+        fake._cancel_delay = 0.05
+        coord = _make_coordinator(memory_db, fake)
 
         await coord.shutdown()
 
-        # Before the fix, shutdown would fire before cancel finished
-        assert service.order == ["cancel", "shutdown"]
+        assert fake.order == ["cancel", "shutdown"]
 
 
 class TestSendWhileStreamingWaitsForCleanup:
     """Regression: when send() cancels an in-flight stream and immediately
-    starts a new one, the new stream must wait for the old task's cleanup
-    (which clears the _streaming flag) before calling service.send().
-    Without the wait_for mechanism, service.send() would see _streaming=True
-    and raise RuntimeError."""
+    starts a new one, the new stream must wait for the old task's cleanup.
 
-    @pytest.mark.asyncio
-    async def test_replacement_send_does_not_raise(self, db: PentaDB):
-        class StreamingGuardService(AgentService):
-            """Mimics CliAgentService's _streaming guard."""
+    The FakeAgentService enforces the real CliAgentService single-stream
+    invariant: it raises RuntimeError if send() is called while _streaming
+    is still True.  If the coordinator's wait_for mechanism were removed,
+    this test would fail with RuntimeError."""
 
-            def __init__(self):
-                self._streaming = False
-
-            async def send(self, prompt, session_id, working_dir, system_prompt=None):
-                if self._streaming:
-                    raise RuntimeError("send() called while already streaming")
-                self._streaming = True
-                try:
-                    yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="hi")
-                    await asyncio.Event().wait()  # hang until cancelled
-                finally:
-                    self._streaming = False
-
-            async def cancel(self):
-                pass
-
-            async def shutdown(self):
-                pass
-
-        config = AgentConfig(
-            id=uuid4(), name="guarded", type=AgentType.CLAUDE,
-            status=AgentStatus.IDLE,
-        )
-        coord = AgentCoordinator(
-            config=config, working_dir=Path("/tmp"), db=db, other_agent_names=[],
-        )
-        coord.service = StreamingGuardService()
+    async def test_replacement_send_does_not_raise(
+        self, memory_db: PentaDB,
+    ):
+        fake = FakeAgentService()
+        fake.enqueue_hang()
+        fake.enqueue_hang()
+        coord = _make_coordinator(memory_db, fake)
 
         completed: list[Message] = []
         coord.on_stream_complete = lambda msg, _aid: completed.append(msg)
@@ -417,48 +342,37 @@ class TestSendWhileStreamingWaitsForCleanup:
         resp1 = coord.send(
             TaggedMessage(sender_label="User", text="first"), conversation,
         )
-        await asyncio.sleep(0.05)
-        assert resp1.text == "hi"
+        await _let_task_start()
+        assert resp1.text == "partial"
 
         # Second send — cancels first, must NOT raise RuntimeError.
         resp2 = coord.send(
             TaggedMessage(sender_label="User", text="second"), conversation,
         )
-        await asyncio.sleep(0.1)
+        await resp1.wait_for_completion()
 
         # First stream should be cancelled, second should be streaming.
         assert resp1.is_cancelled is True
-        assert resp2.text == "hi"  # second stream started successfully
+        assert resp2.text == "partial"  # second stream started successfully
 
         # Cleanup.
         coord._current_task.cancel()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
 
 
 class TestServiceFailureDoesNotWedgeUI:
     """If the service raises an unexpected exception, the message must still
     be marked complete and the UI cleaned up."""
 
-    @pytest.mark.asyncio
-    async def test_exception_marks_complete_and_fires_callback(self, db: PentaDB):
-        class ExplodingService(AgentService):
-            async def send(self, prompt, session_id, working_dir, system_prompt=None):
-                yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="partial")
-                raise ConnectionResetError("boom")
-
-            async def cancel(self):
-                pass
-
-            async def shutdown(self):
-                pass
-
-        config = AgentConfig(
-            id=uuid4(), name="exploder", type=AgentType.CLAUDE, status=AgentStatus.IDLE,
+    async def test_exception_marks_complete_and_fires_callback(
+        self, memory_db: PentaDB,
+    ):
+        fake = FakeAgentService()
+        fake.enqueue_exception(
+            ConnectionResetError("boom"),
+            prefix_events=[StreamEvent(type=StreamEventType.TEXT_DELTA, text="partial")],
         )
-        coord = AgentCoordinator(
-            config=config, working_dir=Path("/tmp"), db=db, other_agent_names=[],
-        )
-        coord.service = ExplodingService()
+        coord = _make_coordinator(memory_db, fake)
 
         completed: list[Message] = []
         coord.on_stream_complete = lambda msg, _aid: completed.append(msg)
@@ -466,7 +380,7 @@ class TestServiceFailureDoesNotWedgeUI:
         conversation: list[Message] = []
         tagged = TaggedMessage(sender_label="User", text="hello")
         response = coord.send(tagged, conversation)
-        await asyncio.sleep(0.1)
+        await response.wait_for_completion()
 
         # Must have fired the callback
         assert len(completed) == 1

@@ -32,9 +32,10 @@ class AgentCoordinator:
         executable: str | None = None,
         other_agent_names: list[str] | None = None,
         session_id: str | None = None,
+        service: AgentService | None = None,
     ) -> None:
         self.config = config
-        self.service: AgentService = self._create_service(executable)
+        self.service: AgentService = service or self._create_service(executable)
         self.session_id = session_id
         self.full_history: list[TaggedMessage] = []
         self.last_prompted_index: int = 0

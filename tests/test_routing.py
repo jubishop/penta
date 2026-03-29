@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
@@ -36,14 +34,6 @@ def _make_mock_coordinator() -> MagicMock:
 
 
 @pytest.fixture
-async def db(tmp_path: Path) -> PentaDB:
-    db = PentaDB(tmp_path / "test-project", storage_root=tmp_path)
-    await db.connect()
-    yield db
-    await db.close()
-
-
-@pytest.fixture
 def agents() -> list[AgentConfig]:
     return []
 
@@ -64,8 +54,8 @@ def agents_by_id() -> dict[UUID, AgentConfig]:
 
 
 @pytest.fixture
-def router(agents, agents_by_id, coordinators, conversation, db) -> MessageRouter:
-    return MessageRouter(agents, agents_by_id, coordinators, conversation, db)
+def router(agents, agents_by_id, coordinators, conversation, memory_db) -> MessageRouter:
+    return MessageRouter(agents, agents_by_id, coordinators, conversation, memory_db)
 
 
 def _register(
@@ -90,9 +80,9 @@ class TestUserMessageRouting:
         assert conversation[0].sender.is_user
         assert conversation[0].text == "hello"
 
-    async def test_message_persisted_to_db(self, router, db):
+    async def test_message_persisted_to_db(self, router, memory_db):
         await router.send_user_message("hello")
-        rows = await db.get_messages()
+        rows = await memory_db.get_messages()
         assert len(rows) == 1
         assert rows[0][1] == "User"
         assert rows[0][2] == "hello"
@@ -202,7 +192,7 @@ class TestRoutingDepthLimit:
 
 class TestAwaitCompletion:
     async def test_completed_message_persisted_to_db(
-        self, router, agents, agents_by_id, coordinators, db,
+        self, router, agents, agents_by_id, coordinators, memory_db,
     ):
         claude = _make_agent("claude", AgentType.CLAUDE)
         _register(agents, coordinators, claude, agents_by_id)
@@ -213,13 +203,13 @@ class TestAwaitCompletion:
         )
         await router._await_completion(msg, claude.id)
 
-        rows = await db.get_messages()
+        rows = await memory_db.get_messages()
         assert len(rows) == 1
         assert rows[0][1] == "claude"
         assert rows[0][2] == "here is my answer"
 
     async def test_cancelled_message_not_persisted(
-        self, router, agents, agents_by_id, coordinators, db,
+        self, router, agents, agents_by_id, coordinators, memory_db,
     ):
         claude = _make_agent("claude", AgentType.CLAUDE)
         _register(agents, coordinators, claude, agents_by_id)
@@ -233,7 +223,7 @@ class TestAwaitCompletion:
         msg.mark_complete()
 
         await router._await_completion(msg, claude.id)
-        rows = await db.get_messages()
+        rows = await memory_db.get_messages()
         assert len(rows) == 0
 
     async def test_completed_message_triggers_mention_rerouting(

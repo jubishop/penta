@@ -15,6 +15,7 @@ from penta.models.message import Message
 from penta.models.message_sender import MessageSender
 from penta.models.tagged_message import TaggedMessage
 from penta.routing import MessageRouter
+from penta.services.agent_service import AgentService
 from penta.services.db import PentaDB
 
 log = logging.getLogger(__name__)
@@ -23,14 +24,19 @@ log = logging.getLogger(__name__)
 class AppState:
 
     def __init__(
-        self, directory: Path, storage_root: Path | None = None,
+        self,
+        directory: Path,
+        storage_root: Path | None = None,
+        db: PentaDB | None = None,
+        service_factory: Callable[[AgentConfig], AgentService] | None = None,
     ) -> None:
         self.directory = directory.resolve()
         self.agents: list[AgentConfig] = []
         self._agents_by_id: dict[UUID, AgentConfig] = {}
         self.coordinators: dict[UUID, AgentCoordinator] = {}
         self.conversation: list[Message] = []
-        self.db = PentaDB(self.directory, storage_root=storage_root)
+        self.db = db or PentaDB(self.directory, storage_root=storage_root)
+        self._service_factory = service_factory
         self._poll_task: asyncio.Task | None = None
 
         self.router = MessageRouter(
@@ -51,15 +57,22 @@ class AppState:
         self, name: str, agent_type: AgentType, model: str | None = None,
     ) -> AgentConfig:
         config = AgentConfig(name=name, type=agent_type, model=model)
-        executable = agent_type.find_executable()
-        if not executable:
-            config.status = AgentStatus.DISCONNECTED
-            log.warning("Agent %s: executable not found, marked DISCONNECTED", name)
         self.agents.append(config)
         self._agents_by_id[config.id] = config
 
         session_id = await self.db.load_session(config.name)
         other_names = [a.name for a in self.agents if a.id != config.id]
+
+        if self._service_factory:
+            service = self._service_factory(config)
+            executable = None
+        else:
+            executable = agent_type.find_executable()
+            if not executable:
+                config.status = AgentStatus.DISCONNECTED
+                log.warning("Agent %s: executable not found, marked DISCONNECTED", name)
+            service = None
+
         coordinator = AgentCoordinator(
             config=config,
             working_dir=self.directory,
@@ -67,6 +80,7 @@ class AppState:
             executable=executable,
             other_agent_names=other_names,
             session_id=session_id,
+            service=service,
         )
 
         # Wire callbacks through to TUI
