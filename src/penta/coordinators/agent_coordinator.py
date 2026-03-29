@@ -71,7 +71,6 @@ class AgentCoordinator:
             # messages that were part of the cancelled stream.
             self.last_prompted_index = self._pre_prompt_index
 
-        self.full_history.append(tagged)
         response = Message(
             sender=MessageSender.agent(self.config.id),
             text="",
@@ -83,6 +82,8 @@ class AgentCoordinator:
         system_prompt = self._get_system_prompt()
         self._pre_prompt_index = self.last_prompted_index
         prompt = self._build_prompt(tagged)
+        self.full_history.append(tagged)
+        self.last_prompted_index = len(self.full_history)
         self._current_task = asyncio.create_task(
             self._stream_response(prompt, response, system_prompt)
         )
@@ -120,8 +121,7 @@ class AgentCoordinator:
     def _build_prompt(self, current: TaggedMessage) -> str:
         parts: list[str] = []
 
-        # Catch-up: messages since last prompt (excluding current, which is last)
-        missed = self.full_history[self.last_prompted_index:-1]
+        missed = self.full_history[self.last_prompted_index:]
         if missed:
             parts.append("[Messages since your last response:]")
             parts.extend(msg.formatted for msg in missed)
@@ -129,7 +129,6 @@ class AgentCoordinator:
             parts.append("[New message:]")
 
         parts.append(current.formatted)
-        self.last_prompted_index = len(self.full_history)
         return "\n".join(parts)
 
     def _identity_preamble(self) -> str:

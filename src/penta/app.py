@@ -80,8 +80,8 @@ class PentaApp(App):
         state.router.on_external_participant_joined = self._on_external_participant_joined
 
         # Seed agents
-        claude = await state.add_agent("claude", AgentType.CLAUDE)
-        codex = await state.add_agent("codex", AgentType.CODEX)
+        claude = await state.add_agent(AgentType.CLAUDE.default_name, AgentType.CLAUDE)
+        codex = await state.add_agent(AgentType.CODEX.default_name, AgentType.CODEX)
 
         # Add status indicators
         status_bar = self.query_one("#status-bar", Horizontal)

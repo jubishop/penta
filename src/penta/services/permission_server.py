@@ -27,8 +27,8 @@ class PermissionServer:
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
-                length = int(self.headers.get("Content-Length", 0))
                 try:
+                    length = int(self.headers.get("Content-Length", 0))
                     body = json.loads(self.rfile.read(length)) if length else {}
                 except (json.JSONDecodeError, ValueError):
                     self.send_response(400)

@@ -31,7 +31,7 @@ class PentaDB:
     @property
     def _db(self) -> aiosqlite.Connection:
         if self._conn is None:
-            raise SystemExit("Fatal: database not connected")
+            raise RuntimeError("database not connected — call connect() first")
         return self._conn
 
     async def connect(self) -> None:

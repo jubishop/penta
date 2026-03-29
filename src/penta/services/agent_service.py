@@ -169,19 +169,19 @@ class CliAgentService(AgentService):
 
         stderr_task = asyncio.create_task(proc.stderr.read())
 
-        _abandoned = True
+        _completed = False
         try:
             async for line in async_lines(proc.stdout):
                 try:
                     data = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                log.debug("[%s] raw: %s", self._agent_name, line[:2000])
+                log.debug("[%s] raw (len=%d): %s", self._agent_name, len(line), line[:2000])
                 async for event in self._parse_line(data):
                     yield event
-            _abandoned = False
+            _completed = True
         finally:
-            if _abandoned:
+            if not _completed:
                 # Caller abandoned iteration (CancelledError / GeneratorExit)
                 # — clean up the subprocess so it doesn't leak.
                 if proc.returncode is None:

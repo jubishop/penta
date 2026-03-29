@@ -28,6 +28,7 @@ class AppState:
     def __init__(self, directory: Path) -> None:
         self.directory = directory.resolve()
         self.agents: list[AgentConfig] = []
+        self._agents_by_id: dict[UUID, AgentConfig] = {}
         self.coordinators: dict[UUID, AgentCoordinator] = {}
         self.conversation: list[Message] = []
         self.db = PentaDB(self.directory)
@@ -35,7 +36,7 @@ class AppState:
 
         self.permissions = PermissionManager(self.agents, self.coordinators)
         self.router = MessageRouter(
-            self.agents, self.coordinators, self.conversation, self.db,
+            self.agents, self._agents_by_id, self.coordinators, self.conversation, self.db,
         )
 
         # Callbacks for the TUI layer
@@ -64,6 +65,7 @@ class AppState:
             config.status = AgentStatus.DISCONNECTED
             log.warning("Agent %s: executable not found, marked DISCONNECTED", name)
         self.agents.append(config)
+        self._agents_by_id[config.id] = config
 
         session_id = await self.db.load_session(config.name)
         other_names = [a.name for a in self.agents if a.id != config.id]
@@ -96,7 +98,7 @@ class AppState:
         return config
 
     def agent_by_id(self, agent_id: UUID) -> AgentConfig | None:
-        return next((a for a in self.agents if a.id == agent_id), None)
+        return self._agents_by_id.get(agent_id)
 
     def agent_by_name(self, name: str) -> AgentConfig | None:
         lower = name.lower()

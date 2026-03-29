@@ -4,6 +4,7 @@ import logging
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import Markdown, Static
 
@@ -112,8 +113,8 @@ class ChatMessage(Vertical):
                 widget.display = True
             else:
                 widget.display = False
-        except Exception:
-            log.debug("watch_thinking_text: widget not ready", exc_info=True)
+        except NoMatches:
+            log.debug("watch_thinking_text: widget not ready")
 
     def watch_body_text(self, value: str) -> None:
         try:
@@ -123,8 +124,8 @@ class ChatMessage(Vertical):
             else:
                 md = self.query_one(".message-body", Markdown)
                 md.update(value or "")
-        except Exception:
-            log.debug("watch_body_text: widget not ready", exc_info=True)
+        except NoMatches:
+            log.debug("watch_body_text: widget not ready")
 
     def watch_is_streaming(self, value: bool) -> None:
         if not value:
@@ -139,5 +140,5 @@ class ChatMessage(Vertical):
                 md = self.query_one(".message-body", Markdown)
                 md.update(self.body_text or "")
                 md.display = True
-            except Exception:
-                log.debug("watch_is_streaming: widget not ready", exc_info=True)
+            except NoMatches:
+                log.debug("watch_is_streaming: widget not ready")
