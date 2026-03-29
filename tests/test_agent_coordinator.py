@@ -368,6 +368,73 @@ class TestShutdownAwaitsCancelTask:
         assert service.order == ["cancel", "shutdown"]
 
 
+class TestSendWhileStreamingWaitsForCleanup:
+    """Regression: when send() cancels an in-flight stream and immediately
+    starts a new one, the new stream must wait for the old task's cleanup
+    (which clears the _streaming flag) before calling service.send().
+    Without the wait_for mechanism, service.send() would see _streaming=True
+    and raise RuntimeError."""
+
+    @pytest.mark.asyncio
+    async def test_replacement_send_does_not_raise(self, db: PentaDB):
+        class StreamingGuardService(AgentService):
+            """Mimics CliAgentService's _streaming guard."""
+
+            def __init__(self):
+                self._streaming = False
+
+            async def send(self, prompt, session_id, working_dir, system_prompt=None):
+                if self._streaming:
+                    raise RuntimeError("send() called while already streaming")
+                self._streaming = True
+                try:
+                    yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="hi")
+                    await asyncio.Event().wait()  # hang until cancelled
+                finally:
+                    self._streaming = False
+
+            async def cancel(self):
+                pass
+
+            async def shutdown(self):
+                pass
+
+        config = AgentConfig(
+            id=uuid4(), name="guarded", type=AgentType.CLAUDE,
+            status=AgentStatus.IDLE,
+        )
+        coord = AgentCoordinator(
+            config=config, working_dir=Path("/tmp"), db=db, other_agent_names=[],
+        )
+        coord.service = StreamingGuardService()
+
+        completed: list[Message] = []
+        coord.on_stream_complete = lambda msg, _aid: completed.append(msg)
+
+        conversation: list[Message] = []
+
+        # First send — starts streaming.
+        resp1 = coord.send(
+            TaggedMessage(sender_label="User", text="first"), conversation,
+        )
+        await asyncio.sleep(0.05)
+        assert resp1.text == "hi"
+
+        # Second send — cancels first, must NOT raise RuntimeError.
+        resp2 = coord.send(
+            TaggedMessage(sender_label="User", text="second"), conversation,
+        )
+        await asyncio.sleep(0.1)
+
+        # First stream should be cancelled, second should be streaming.
+        assert resp1.is_cancelled is True
+        assert resp2.text == "hi"  # second stream started successfully
+
+        # Cleanup.
+        coord._current_task.cancel()
+        await asyncio.sleep(0.05)
+
+
 class TestServiceFailureDoesNotWedgeUI:
     """If the service raises an unexpected exception, the message must still
     be marked complete and the UI cleaned up."""

@@ -177,15 +177,21 @@ class PentaApp(App):
                 widget.body_text = msg.text
                 widget.is_streaming = msg.is_streaming
         chat_room = self.query_one("#chat-room", ChatRoom)
-        chat_room.scroll_if_at_bottom()
+        if msg and msg.text:
+            chat_room.scroll_if_at_bottom()
+        elif chat_room.is_at_bottom:
+            chat_room.scroll_end(animate=False)
 
     def _apply_stream_complete(self, message: Message) -> None:
         widget = self._messages.widgets.get(message.id)
         if widget:
             widget.thinking_text = message.thinking_text
             widget.body_text = message.text
+            widget.is_cancelled = message.is_cancelled
             widget.is_streaming = False
         self._messages.complete_stream(message)
+        chat_room = self.query_one("#chat-room", ChatRoom)
+        chat_room.scroll_if_at_bottom()
 
     def _show_permission_dialog(self, request: PermissionRequest) -> None:
         # Find the streaming message widget for this agent and mount the dialog

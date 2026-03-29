@@ -66,11 +66,17 @@ class ChatMessage(Vertical):
     ChatMessage .error-text {
         color: red;
     }
+    ChatMessage .cancelled-label {
+        color: $text-muted;
+        text-style: dim italic;
+        padding: 0 0 0 2;
+    }
     """
 
     thinking_text: reactive[str] = reactive("")
     body_text: reactive[str] = reactive("")
     is_streaming: reactive[bool] = reactive(False, init=False)
+    is_cancelled: reactive[bool] = reactive(False, init=False)
 
     def __init__(
         self,
@@ -145,6 +151,10 @@ class ChatMessage(Vertical):
         except NoMatches:
             log.debug("watch_body_text: widget not ready")
 
+    def watch_is_cancelled(self, value: bool) -> None:
+        if value and self.body_text:
+            self.mount(Static("[interrupted]", classes="cancelled-label"))
+
     def watch_is_streaming(self, value: bool) -> None:
         if not value:
             if not self.body_text:
@@ -164,6 +174,19 @@ class ChatMessage(Vertical):
             try:
                 fold = self.query_one(".thinking-fold", Collapsible)
                 if self.thinking_text:
-                    fold.collapsed = True
+                    self._collapse_thinking(fold)
             except NoMatches:
                 pass
+
+    def _collapse_thinking(self, fold: Collapsible) -> None:
+        """Collapse the thinking fold without disturbing scroll position.
+
+        Textual's ``Collapsible._watch_collapsed`` calls ``scroll_visible``
+        after every toggle, which drags the viewport to the fold.  We bypass
+        the watcher by writing the backing store directly and applying the
+        visual state change ourselves.
+        """
+        log.debug("Collapsing thinking (bypass scroll_visible)")
+        fold._reactive_collapsed = True
+        fold._update_collapsed(True)
+        fold.refresh(layout=True)
