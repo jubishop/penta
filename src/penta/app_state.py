@@ -11,6 +11,7 @@ from penta.coordinators.agent_coordinator import AgentCoordinator
 from penta.models.agent_config import AgentConfig
 from penta.models.agent_status import AgentStatus
 from penta.models.agent_type import AgentType
+from penta.models.conversation_info import ConversationInfo
 from penta.models.message import Message
 from penta.models.message_sender import MessageSender
 from penta.models.tagged_message import TaggedMessage
@@ -43,13 +44,26 @@ class AppState:
             self.agents, self._agents_by_id, self.coordinators, self.conversation, self.db,
         )
 
+        # Conversation state
+        self.current_conversation_id: int = 1
+        self.current_conversation_title: str = "Default"
+
         # Callbacks for the TUI layer
         self.on_text_delta: Callable[[UUID, str], None] | None = None
         self.on_stream_complete: Callable[[Message, UUID], None] | None = None
         self.on_status_changed: Callable[[UUID, AgentStatus], None] | None = None
+        self.on_conversation_switched: Callable[[], None] | None = None
 
     async def connect(self) -> None:
         await self.db.connect()
+        self.current_conversation_id = self.db.conversation_id
+
+        # Load the title of the active conversation
+        rows = await self.db.list_conversations()
+        for cid, title, _, _ in rows:
+            if cid == self.current_conversation_id:
+                self.current_conversation_title = title
+                break
 
     # -- Agent management --
 
@@ -123,6 +137,134 @@ class AppState:
 
     def receive_external_message(self, sender_name: str, text: str) -> None:
         self.router.receive_external_message(sender_name, text)
+
+    # -- Conversation management --
+
+    async def create_conversation(self, title: str) -> ConversationInfo:
+        cid = await self.db.create_conversation(title)
+        rows = await self.db.list_conversations()
+        for row_id, row_title, created, updated in rows:
+            if row_id == cid:
+                return ConversationInfo(
+                    id=cid,
+                    title=row_title,
+                    created_at=datetime.fromisoformat(created),
+                    updated_at=datetime.fromisoformat(updated),
+                )
+        # Shouldn't happen, but satisfy the return type
+        raise RuntimeError(f"Conversation {cid} not found after creation")
+
+    async def list_conversations(self) -> list[ConversationInfo]:
+        rows = await self.db.list_conversations()
+        return [
+            ConversationInfo(
+                id=cid,
+                title=title,
+                created_at=datetime.fromisoformat(created),
+                updated_at=datetime.fromisoformat(updated),
+            )
+            for cid, title, created, updated in rows
+        ]
+
+    async def delete_conversation(self, conversation_id: int) -> bool:
+        """Delete a conversation. Returns False if it's the active or sole conversation."""
+        if conversation_id == self.current_conversation_id:
+            return False
+        rows = await self.db.list_conversations()
+        if len(rows) <= 1:
+            return False
+        await self.db.delete_conversation(conversation_id)
+        return True
+
+    async def rename_conversation(self, conversation_id: int, title: str) -> None:
+        await self.db.rename_conversation(conversation_id, title)
+        if conversation_id == self.current_conversation_id:
+            self.current_conversation_title = title
+
+    async def switch_conversation(self, conversation_id: int) -> None:
+        """Tear down current agent state and rebuild for the target conversation."""
+        # 1. Pause external polling so it can't inject messages during switch
+        saved_callback = self.db._on_external_message
+        self.db._on_external_message = None
+
+        try:
+            # 2. Cancel active streams
+            for coord in self.coordinators.values():
+                coord.cancel()
+
+            # 3. Wait for pending routing tasks to persist to the current conversation
+            await self.router.drain()
+
+            # 4. Shut down coordinators (cancels processes, shuts down services)
+            for coord in self.coordinators.values():
+                await coord.shutdown()
+
+            # 5. Switch DB context
+            await self.db.set_conversation(conversation_id)
+
+            # 6. Clear in-memory state (same list/dict objects — router refs stay valid)
+            self.conversation.clear()
+            self.router.external_participants.clear()
+
+            # 7. Rebuild coordinators with new conversation's sessions
+            await self._rebuild_coordinators()
+
+            # 8. Load new conversation's history
+            await self.load_chat_history()
+
+            # 9. Update conversation tracking
+            self.current_conversation_id = conversation_id
+            rows = await self.db.list_conversations()
+            for cid, title, _, _ in rows:
+                if cid == conversation_id:
+                    self.current_conversation_title = title
+                    break
+
+        finally:
+            # 10. Restore external polling
+            self.db._on_external_message = saved_callback
+
+        # 11. Notify UI
+        if self.on_conversation_switched:
+            self.on_conversation_switched()
+
+    async def _rebuild_coordinators(self) -> None:
+        """Create fresh coordinators for all registered agents using the current conversation's sessions."""
+        self.coordinators.clear()
+        other_names_map = {
+            config.id: [a.name for a in self.agents if a.id != config.id]
+            for config in self.agents
+        }
+
+        for config in self.agents:
+            session_id = await self.db.load_session(config.name)
+
+            if self._service_factory:
+                service = self._service_factory(config)
+                executable = None
+            else:
+                executable = config.type.find_executable()
+                if not executable:
+                    config.status = AgentStatus.DISCONNECTED
+                else:
+                    config.status = AgentStatus.IDLE
+                service = None
+
+            coordinator = AgentCoordinator(
+                config=config,
+                working_dir=self.directory,
+                db=self.db,
+                executable=executable,
+                other_agent_names=other_names_map[config.id],
+                session_id=session_id,
+                service=service,
+            )
+
+            coordinator.on_text_delta = self._relay_text_delta
+            coordinator.on_stream_complete = self._relay_stream_complete
+            coordinator.on_status_changed = self._relay_status_changed
+
+            self.coordinators[config.id] = coordinator
 
     # -- Lifecycle --
 

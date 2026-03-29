@@ -103,8 +103,8 @@ class TestExternalChanges:
         ext_conn = sqlite3.connect(file_db._db_path)
         ext_conn.execute("PRAGMA journal_mode=WAL")
         ext_conn.execute(
-            "INSERT INTO messages (sender, text, timestamp) VALUES (?, ?, ?)",
-            ("MCP-Agent", "external msg", "2026-01-01T00:00:00+00:00"),
+            "INSERT INTO messages (conversation_id, sender, text, timestamp) VALUES (?, ?, ?, ?)",
+            (file_db.conversation_id, "MCP-Agent", "external msg", "2026-01-01T00:00:00+00:00"),
         )
         ext_conn.commit()
         ext_conn.close()
@@ -119,8 +119,8 @@ class TestExternalChanges:
         ext_conn = sqlite3.connect(file_db._db_path)
         ext_conn.execute("PRAGMA journal_mode=WAL")
         ext_conn.execute(
-            "INSERT INTO messages (sender, text, timestamp) VALUES (?, ?, ?)",
-            ("Agent", "ext-1", "2026-01-01T00:00:00+00:00"),
+            "INSERT INTO messages (conversation_id, sender, text, timestamp) VALUES (?, ?, ?, ?)",
+            (file_db.conversation_id, "Agent", "ext-1", "2026-01-01T00:00:00+00:00"),
         )
         ext_conn.commit()
         ext_conn.close()
