@@ -195,6 +195,10 @@ class AgentCoordinator:
                             response.text = event.text
 
                     case StreamEventType.TOOL_USE_STARTED:
+                        log.info(
+                            "[%s] Tool use: %s (received_text=%s)",
+                            self.config.name, event.tool_name, received_text,
+                        )
                         tool_line = f"> Using {event.tool_name}...\n"
                         if received_text:
                             # Already in the response body — append there.
@@ -233,10 +237,15 @@ class AgentCoordinator:
                         )
 
                     case StreamEventType.DONE:
+                        log.debug("[%s] Stream DONE event received", self.config.name)
                         break
 
         except asyncio.CancelledError:
-            log.info("[%s] Stream cancelled", self.config.name)
+            log.info(
+                "[%s] Stream cancelled (body_len=%d, thinking_len=%d, received_text=%s)",
+                self.config.name, len(response.text),
+                len(response.thinking_text), received_text,
+            )
             response.is_cancelled = True
             response.mark_complete()
             self.set_status(AgentStatus.IDLE)
@@ -245,7 +254,10 @@ class AgentCoordinator:
             return
 
         except Exception:
-            log.exception("[%s] Stream failed", self.config.name)
+            log.exception(
+                "[%s] Stream failed (body_len=%d, received_text=%s)",
+                self.config.name, len(response.text), received_text,
+            )
             if response.text:
                 response.text += "\n\n[Stream failed unexpectedly]"
             else:
@@ -257,6 +269,10 @@ class AgentCoordinator:
                 self.on_stream_complete(response, self.config.id)
             return
 
+        log.info(
+            "[%s] Stream completed normally (body_len=%d)",
+            self.config.name, len(response.text),
+        )
         response.mark_complete()
         self.set_status(AgentStatus.IDLE)
 

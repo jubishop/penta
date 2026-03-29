@@ -26,7 +26,7 @@ class NewContentIndicator(Static):
     """
 
     def __init__(self) -> None:
-        super().__init__("▼ New messages below ▼", id="new-content-indicator")
+        super().__init__("▼ New messages below (ctrl+b) ▼", id="new-content-indicator")
 
     def on_click(self) -> None:
         chat_room = self.screen.query_one("#chat-room", ChatRoom)

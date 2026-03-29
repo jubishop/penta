@@ -10,6 +10,14 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 
+DEFAULT_AUTO_APPROVE = frozenset({
+    "Read", "Glob", "Grep", "Agent", "LS",
+    "WebSearch", "WebFetch",
+    "TodoRead", "TodoWrite",
+    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
+})
+
+
 class PermissionServer:
     """Localhost HTTP server that handles Claude CLI PreToolUse hook requests.
 
@@ -18,13 +26,20 @@ class PermissionServer:
     back as the HTTP response.
     """
 
-    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        auto_approve: frozenset[str] | None = None,
+    ) -> None:
         self._loop = loop
         self._pending: dict[str, asyncio.Future[bool]] = {}
         self._on_request: Callable[[str, str, str], None] | None = None
         self._server: HTTPServer | None = None
         self.port: int | None = None
         self._thread: threading.Thread | None = None
+        self.auto_approve: frozenset[str] = (
+            auto_approve if auto_approve is not None else DEFAULT_AUTO_APPROVE
+        )
 
     def set_request_callback(
         self, callback: Callable[[str, str, str], None]
@@ -56,6 +71,23 @@ class PermissionServer:
                 if isinstance(tool_input, dict):
                     tool_input = json.dumps(tool_input, indent=2)
 
+                # Auto-approve safe tools without touching the event loop.
+                if tool_name in server_ref.auto_approve:
+                    log.debug("Auto-approved tool=%s, id=%s", tool_name, tool_use_id)
+                    resp_body = json.dumps({
+                        "hookSpecificOutput": {"permissionDecision": "allow"}
+                    })
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp_body)))
+                    self.end_headers()
+                    self.wfile.write(resp_body.encode())
+                    return
+
+                log.info(
+                    "Permission request received: tool=%s, id=%s",
+                    tool_name, tool_use_id,
+                )
                 future = asyncio.run_coroutine_threadsafe(
                     server_ref._request_permission(tool_use_id, tool_name, tool_input),
                     server_ref._loop,
@@ -64,12 +96,17 @@ class PermissionServer:
                 try:
                     granted = future.result(timeout=300)
                 except Exception:
+                    log.exception("Permission future failed: tool=%s, id=%s", tool_name, tool_use_id)
                     granted = False
                     server_ref._loop.call_soon_threadsafe(
                         server_ref._cleanup_pending, tool_use_id
                     )
 
                 decision = "allow" if granted else "deny"
+                log.info(
+                    "Permission resolved: tool=%s, id=%s, decision=%s",
+                    tool_name, tool_use_id, decision,
+                )
                 resp_body = json.dumps({
                     "hookSpecificOutput": {"permissionDecision": decision}
                 })

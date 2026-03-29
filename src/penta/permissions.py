@@ -30,6 +30,7 @@ class PermissionManager:
         """Called by PermissionServer when Claude POSTs a permission request."""
         # TODO: routes to the first Claude agent — when multiple Claude agents
         # are supported, the hook protocol will need to carry an agent identifier.
+        log.info("Permission request: tool=%s, id=%s", tool_name, tool_use_id)
         claude_agent = next(
             (a for a in self._agents if a.type == AgentType.CLAUDE), None
         )
@@ -47,6 +48,7 @@ class PermissionManager:
         if coord:
             coord.set_status(AgentStatus.AWAITING_PERMISSION)
         if self.on_permission_request:
+            log.debug("Dispatching permission dialog for tool=%s", tool_name)
             self.on_permission_request(request)
 
     def approve(self, request_id: str) -> None:

@@ -7,6 +7,7 @@ from uuid import UUID
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
+from textual.message import Message as TextualMessage
 from textual.widgets import Footer, Static
 
 from penta.models import AgentStatus, AgentType, Message, PermissionRequest, AgentConfig
@@ -38,6 +39,14 @@ class _MessageTracker:
             self.streaming.pop(message.sender.agent_id, None)
 
 
+class _PermissionRequested(TextualMessage, bubble=False):
+    """Internal message to bridge permission requests into Textual's context."""
+
+    def __init__(self, request: PermissionRequest) -> None:
+        super().__init__()
+        self.request = request
+
+
 class PentaApp(App):
     CSS_PATH = "penta.tcss"
     TITLE = "Penta"
@@ -46,7 +55,16 @@ class PentaApp(App):
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+enter", "submit", "Send"),
+        ("ctrl+b", "scroll_to_new", "Jump to new"),
     ]
+
+    def action_quit(self) -> None:
+        log.info("action_quit triggered")
+        self.exit()
+
+    def _handle_exception(self, error: Exception) -> None:
+        log.exception("Unhandled exception — app will exit: %s", error)
+        super()._handle_exception(error)
 
     def __init__(self, directory: Path, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -111,6 +129,8 @@ class PentaApp(App):
             self._messages.rendered_up_to = len(state.conversation)
 
     async def on_unmount(self) -> None:
+        import traceback
+        log.info("on_unmount called — stack:\n%s", "".join(traceback.format_stack()))
         if self._poll_task:
             self._poll_task.cancel()
         if self._state:
@@ -120,6 +140,12 @@ class PentaApp(App):
 
     def action_submit(self) -> None:
         self.query_one(InputBar).action_submit()
+
+    def action_scroll_to_new(self) -> None:
+        indicator = self.query_one("#new-content-indicator", NewContentIndicator)
+        if indicator.display:
+            chat_room = self.query_one("#chat-room", ChatRoom)
+            chat_room.scroll_to_bottom()
 
     async def on_input_bar_submitted(self, event: InputBar.Submitted) -> None:
         if not self._state:
@@ -147,7 +173,14 @@ class PentaApp(App):
         self._apply_stream_complete(message)
 
     def _on_permission_request(self, request: PermissionRequest) -> None:
-        self._show_permission_dialog(request)
+        # The permission callback arrives via asyncio.run_coroutine_threadsafe
+        # from the HTTP server thread, which lacks Textual's active_app
+        # ContextVar.  Posting a message routes it through Textual's normal
+        # message loop where the app context is set.
+        self.post_message(_PermissionRequested(request))
+
+    def on__permission_requested(self, event: _PermissionRequested) -> None:
+        self._show_permission_dialog(event.request)
 
     def _on_status_changed(self, agent_id: UUID, status: AgentStatus) -> None:
         self._apply_status_change(agent_id, status)
@@ -184,6 +217,11 @@ class PentaApp(App):
 
     def _apply_stream_complete(self, message: Message) -> None:
         widget = self._messages.widgets.get(message.id)
+        log.info(
+            "Stream complete: msg=%s, cancelled=%s, error=%s, body_len=%d, widget_found=%s",
+            message.id, message.is_cancelled, message.is_error,
+            len(message.text), widget is not None,
+        )
         if widget:
             widget.thinking_text = message.thinking_text
             widget.body_text = message.text
@@ -195,6 +233,10 @@ class PentaApp(App):
 
     def _show_permission_dialog(self, request: PermissionRequest) -> None:
         # Find the streaming message widget for this agent and mount the dialog
+        log.info(
+            "Showing permission dialog: tool=%s, agent=%s",
+            request.tool_name, request.agent_id,
+        )
         if not self._state:
             return
         for msg in reversed(self._state.conversation):
@@ -205,6 +247,10 @@ class PentaApp(App):
             ):
                 widget = self._messages.widgets.get(msg.id)
                 if widget:
+                    log.debug(
+                        "Mounting permission dialog on msg=%s (mounted=%s)",
+                        msg.id, widget._is_mounted,
+                    )
                     dialog = PermissionDialog(
                         request_id=request.id,
                         tool_name=request.tool_name,
@@ -214,6 +260,7 @@ class PentaApp(App):
                     return
 
         # Fallback: mount at bottom of chat
+        log.debug("Permission dialog fallback: mounting on chat room")
         chat_room = self.query_one("#chat-room", ChatRoom)
         dialog = PermissionDialog(
             request_id=request.id,
@@ -237,6 +284,10 @@ class PentaApp(App):
             msg = conversation[i]
             if msg.id not in self._messages.widgets:
                 name, agent_type = self._sender_info(msg)
+                log.debug(
+                    "Mounting new message widget: msg=%s, sender=%s, streaming=%s",
+                    msg.id, name, msg.is_streaming,
+                )
                 widget = chat_room.add_message(msg, name, agent_type)
                 self._messages.register(msg, widget)
         self._messages.rendered_up_to = len(conversation)
