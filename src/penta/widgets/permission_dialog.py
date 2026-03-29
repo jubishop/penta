@@ -54,8 +54,8 @@ class PermissionDialog(Vertical):
         self._tool_input = tool_input
 
     def compose(self) -> ComposeResult:
-        yield Static(f"Wants to use: {self._tool_name}", classes="tool-name")
-        yield Static(self._tool_input, classes="tool-input")
+        yield Static(f"Wants to use: {self._tool_name}", classes="tool-name", markup=False)
+        yield Static(self._tool_input, classes="tool-input", markup=False)
         with Horizontal(classes="buttons"):
             yield Button("Allow", variant="success", id="allow-btn")
             yield Button("Deny", variant="error", id="deny-btn")
