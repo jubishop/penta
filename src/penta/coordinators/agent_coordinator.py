@@ -72,8 +72,10 @@ class AgentCoordinator:
         self, tagged: TaggedMessage, conversation: list[Message]
     ) -> Message:
         """Send a message and return the streaming response Message."""
+        cancelled_task: asyncio.Task | None = None
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
+            cancelled_task = self._current_task
             # Roll back last_prompted_index so the next prompt re-includes
             # messages that were part of the cancelled stream.
             self.last_prompted_index = self._pre_prompt_index
@@ -92,7 +94,10 @@ class AgentCoordinator:
         self.full_history.append(tagged)
         self.last_prompted_index = len(self.full_history)
         self._current_task = asyncio.create_task(
-            self._stream_response(prompt, response, system_prompt)
+            self._stream_response(
+                prompt, response, system_prompt,
+                wait_for=cancelled_task,
+            )
         )
         return response
 
@@ -151,8 +156,20 @@ class AgentCoordinator:
     # -- Streaming --
 
     async def _stream_response(
-        self, prompt: str, response: Message, system_prompt: str | None,
+        self,
+        prompt: str,
+        response: Message,
+        system_prompt: str | None,
+        wait_for: asyncio.Task | None = None,
     ) -> None:
+        if wait_for is not None:
+            log.debug("[%s] Waiting for cancelled stream to clean up", self.config.name)
+            try:
+                await wait_for
+            except asyncio.CancelledError:
+                pass
+            log.debug("[%s] Cancelled stream cleaned up, proceeding", self.config.name)
+
         received_text = False
 
         try:
