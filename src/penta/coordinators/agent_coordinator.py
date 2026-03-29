@@ -159,8 +159,6 @@ class AgentCoordinator:
                 pass
             log.debug("[%s] Cancelled stream cleaned up, proceeding", self.config.name)
 
-        received_text = False
-
         try:
             async for event in self.service.send(
                 prompt, self.session_id, self._working_dir, system_prompt,
@@ -175,28 +173,21 @@ class AgentCoordinator:
 
                     case StreamEventType.TEXT_DELTA:
                         response.text += event.text
-                        received_text = True
                         if self.on_text_delta:
                             self.on_text_delta(self.config.id, event.text)
 
                     case StreamEventType.TEXT_COMPLETE:
-                        if not received_text:
+                        if not response.text:
                             response.text = event.text
 
                     case StreamEventType.TOOL_USE_STARTED:
                         log.info(
-                            "[%s] Tool use: %s (received_text=%s)",
-                            self.config.name, event.tool_name, received_text,
+                            "[%s] Tool use: %s",
+                            self.config.name, event.tool_name,
                         )
-                        tool_line = f"> Using {event.tool_name}...\n"
-                        if received_text:
-                            # Already in the response body — append there.
-                            response.text += "\n\n" + tool_line
-                        else:
-                            # Still in thinking territory — keep body clean.
-                            response.thinking_text += tool_line
-                            if self.on_text_delta:
-                                self.on_text_delta(self.config.id, "")
+                        response.thinking_text += f"> Using {event.tool_name}...\n"
+                        if self.on_text_delta:
+                            self.on_text_delta(self.config.id, "")
                         self.set_status(AgentStatus.PROCESSING)
 
                     case StreamEventType.THINKING:
@@ -231,9 +222,9 @@ class AgentCoordinator:
 
         except asyncio.CancelledError:
             log.info(
-                "[%s] Stream cancelled (body_len=%d, thinking_len=%d, received_text=%s)",
+                "[%s] Stream cancelled (body_len=%d, thinking_len=%d)",
                 self.config.name, len(response.text),
-                len(response.thinking_text), received_text,
+                len(response.thinking_text),
             )
             response.is_cancelled = True
             response.mark_complete()
@@ -244,8 +235,8 @@ class AgentCoordinator:
 
         except Exception:
             log.exception(
-                "[%s] Stream failed (body_len=%d, received_text=%s)",
-                self.config.name, len(response.text), received_text,
+                "[%s] Stream failed (body_len=%d)",
+                self.config.name, len(response.text),
             )
             if response.text:
                 response.text += "\n\n[Stream failed unexpectedly]"
