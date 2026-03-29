@@ -12,7 +12,7 @@ from textual.widgets import Footer, Static
 from penta.models import AgentStatus, AgentType, Message, PermissionRequest, AgentConfig
 from penta.app_state import AppState
 from penta.widgets.chat_message import ChatMessage
-from penta.widgets.chat_room import ChatRoom
+from penta.widgets.chat_room import ChatRoom, NewContentIndicator
 from penta.widgets.input_bar import InputBar
 from penta.widgets.permission_dialog import PermissionDialog
 from penta.widgets.status_indicator import ExternalIndicator, StatusIndicator
@@ -61,6 +61,7 @@ class PentaApp(App):
             yield Static(f"Penta -- {self._directory.name}", id="app-title")
             yield Horizontal(id="status-bar")
         yield ChatRoom(id="chat-room")
+        yield NewContentIndicator()
         yield InputBar()
         yield Footer()
 
@@ -154,6 +155,12 @@ class PentaApp(App):
     def _on_external_message(self, sender: str, text: str) -> None:
         self._render_new_messages()
 
+    def on_chat_room_new_content_changed(
+        self, event: ChatRoom.NewContentChanged,
+    ) -> None:
+        indicator = self.query_one("#new-content-indicator", NewContentIndicator)
+        indicator.display = event.has_new
+
     def _on_external_participant_joined(self, name: str) -> None:
         status_bar = self.query_one("#status-bar", Horizontal)
         status_bar.mount(ExternalIndicator(name))
@@ -170,7 +177,7 @@ class PentaApp(App):
                 widget.body_text = msg.text
                 widget.is_streaming = msg.is_streaming
         chat_room = self.query_one("#chat-room", ChatRoom)
-        chat_room.scroll_end(animate=False)
+        chat_room.scroll_if_at_bottom()
 
     def _apply_stream_complete(self, message: Message) -> None:
         widget = self._messages.widgets.get(message.id)
