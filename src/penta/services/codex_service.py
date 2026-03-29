@@ -133,7 +133,7 @@ class CodexService(CliAgentService):
                         check = "x" if t.get("completed") else " "
                         lines.append(f"  [{check}] {t.get('text', '')}")
                     yield StreamEvent(
-                        type=StreamEventType.TEXT_DELTA,
+                        type=StreamEventType.THINKING,
                         text="\n".join(lines) + "\n",
                     )
 

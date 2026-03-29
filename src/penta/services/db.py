@@ -25,6 +25,7 @@ class PentaDB:
         self._conn: aiosqlite.Connection | None = None
         self._last_data_version: int = 0
         self._last_seen_id: int = 0
+        self._local_ids: set[int] = set()
         self._on_external_message: Callable[[str, str], None] | None = None
 
     @property
@@ -55,8 +56,7 @@ class PentaDB:
             (sender, text, utc_iso_now()),
         )
         await self._db.commit()
-        self._last_seen_id = cur.lastrowid
-        self._last_data_version = await self._get_data_version()
+        self._local_ids.add(cur.lastrowid)
         return cur.lastrowid
 
     async def get_messages(self, limit: int = 2000) -> list[tuple[int, str, str, str]]:
@@ -82,7 +82,10 @@ class PentaDB:
         rows = await cur.fetchall()
         if rows:
             self._last_seen_id = rows[-1][0]
-        return rows
+        # Filter out rows we wrote locally; clean up stale tracked IDs
+        external = [r for r in rows if r[0] not in self._local_ids]
+        self._local_ids = {lid for lid in self._local_ids if lid > self._last_seen_id}
+        return external
 
     async def compact(self, max_messages: int | None = None) -> None:
         limit = max_messages or self.MAX_MESSAGES

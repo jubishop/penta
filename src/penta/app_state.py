@@ -133,7 +133,11 @@ class AppState:
         ]
         for coord in self.coordinators.values():
             coord.full_history = list(history)
-            coord.last_prompted_index = 0
+            if coord.session_id is not None:
+                # Resumed session already has this context
+                coord.last_prompted_index = len(history)
+            else:
+                coord.last_prompted_index = 0
 
     def start_external_polling(
         self, relay: Callable[[str, str], None],
