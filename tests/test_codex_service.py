@@ -171,8 +171,8 @@ class TestCodexEventParsing:
         assert "python asyncio" in tool_events[0].tool_name
 
     @pytest.mark.asyncio
-    async def test_todo_list_yields_text(self):
-        """item.completed with todo_list should emit TEXT_DELTA with checklist."""
+    async def test_todo_list_yields_thinking(self):
+        """item.completed with todo_list should emit THINKING with checklist."""
         lines = [
             json.dumps({"type": "thread.started", "thread_id": "thr_1"}),
             json.dumps({
@@ -190,10 +190,10 @@ class TestCodexEventParsing:
         ]
         events = await _run_with_lines(lines)
 
-        delta_events = [e for e in events if e.type == StreamEventType.TEXT_DELTA]
-        assert len(delta_events) == 1
-        assert "[x] Read file" in delta_events[0].text
-        assert "[ ] Write test" in delta_events[0].text
+        thinking_events = [e for e in events if e.type == StreamEventType.THINKING]
+        assert len(thinking_events) == 1
+        assert "[x] Read file" in thinking_events[0].text
+        assert "[ ] Write test" in thinking_events[0].text
 
     @pytest.mark.asyncio
     async def test_reasoning_yields_thinking(self):
