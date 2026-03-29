@@ -21,6 +21,7 @@ class TestClaudeArgBuilding:
         assert "--verbose" in args
         assert "--output-format" in args
         assert "--include-partial-messages" in args
+        assert "--dangerously-skip-permissions" in args
         assert args[-1] == "hello"
 
     def test_resume_session_args(self):
@@ -42,14 +43,6 @@ class TestClaudeArgBuilding:
         args = service._build_args("hello", session_id=None, system_prompt=None)
         assert "--model" in args
         assert args[args.index("--model") + 1] == "opus"
-
-    def test_permission_server_settings(self):
-        server = MagicMock()
-        server.hook_settings_json = '{"hooks": {}}'
-        service = ClaudeService(executable="/usr/bin/claude", permission_server=server)
-        args = service._build_args("hello", session_id=None, system_prompt=None)
-        assert "--settings" in args
-        assert args[args.index("--settings") + 1] == '{"hooks": {}}'
 
 
 class TestClaudeEventParsing:

@@ -56,10 +56,8 @@ class StreamEvent:
 class AgentService(ABC):
     """Pure interface — test doubles inherit from this directly.
 
-    Permission handling is intentionally NOT part of this interface.
-    Claude uses an out-of-band HTTP hook bridge (PermissionServer);
-    Codex auto-approves all tool use.  The coordinator and
-    AppState handle permission resolution directly.
+    Both Claude (--dangerously-skip-permissions) and Codex (-a never)
+    auto-approve all tool use at the CLI level.
     """
 
     @abstractmethod

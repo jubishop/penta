@@ -27,7 +27,6 @@ class StatusIndicator(Static):
         dot_map = {
             AgentStatus.IDLE: "[green]●[/]",
             AgentStatus.PROCESSING: "[yellow]●[/]",
-            AgentStatus.AWAITING_PERMISSION: "[red]●[/]",
             AgentStatus.DISCONNECTED: "[dim]○[/]",
             AgentStatus.ERROR: "[red]✗[/]",
         }

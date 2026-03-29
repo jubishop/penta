@@ -18,7 +18,6 @@ from penta.services.agent_service import AgentService, StreamEventType
 from penta.services.claude_service import ClaudeService
 from penta.services.codex_service import CodexService
 from penta.services.db import PentaDB
-from penta.services.permission_server import PermissionServer
 from penta.utils import log_task_error
 
 log = logging.getLogger(__name__)
@@ -31,12 +30,10 @@ class AgentCoordinator:
         working_dir: Path,
         db: PentaDB,
         executable: str | None = None,
-        permission_server: PermissionServer | None = None,
         other_agent_names: list[str] | None = None,
         session_id: str | None = None,
     ) -> None:
         self.config = config
-        self._permission_server = permission_server
         self.service: AgentService = self._create_service(executable)
         self.session_id = session_id
         self.full_history: list[TaggedMessage] = []
@@ -100,15 +97,6 @@ class AgentCoordinator:
             )
         )
         return response
-
-    def resolve_permission(self, request_id: str, granted: bool) -> None:
-        """Resolve a pending permission request via the HTTP bridge.
-
-        Only Claude uses interactive permissions (via PermissionServer).
-        Codex auto-approves all tool use at the CLI level.
-        """
-        if self._permission_server:
-            self._permission_server.resolve_permission(request_id, granted)
 
     def cancel(self) -> None:
         if self._current_task and not self._current_task.done():
@@ -296,7 +284,6 @@ class AgentCoordinator:
             return ClaudeService(
                 executable=executable,
                 model=self.config.model,
-                permission_server=self._permission_server,
             )
         else:
             return CodexService(
