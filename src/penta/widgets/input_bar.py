@@ -12,7 +12,7 @@ class InputBar(Horizontal):
     DEFAULT_CSS = """
     InputBar {
         height: auto;
-        max-height: 8;
+        max-height: 7;
         dock: bottom;
         padding: 1;
         background: $surface;
@@ -20,7 +20,7 @@ class InputBar(Horizontal):
     InputBar TextArea {
         width: 1fr;
         min-height: 1;
-        max-height: 6;
+        max-height: 5;
         border: round $accent;
     }
     InputBar Button {
