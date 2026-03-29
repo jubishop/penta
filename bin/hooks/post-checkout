@@ -1,16 +1,10 @@
 #!/bin/bash
-# Auto-create .venv for new worktrees
-# post-checkout receives: prev_head new_head is_branch_checkout
-# Only run on branch checkouts (flag=1) and only if .venv doesn't exist
+# Automatically run prep-worktree when a new worktree is created.
+# $1 = previous HEAD (null hash for new worktrees), $2 = new HEAD, $3 = branch flag
 
-if [ "$3" = "1" ] && [ ! -d ".venv" ]; then
-    echo "Setting up .venv in background (run '.venv/bin/penta' once ready)..."
-    WORKTREE_DIR="$(pwd)"
-    (
-        cd "$WORKTREE_DIR" &&
-        python3 -m venv --upgrade-deps .venv &&
-        .venv/bin/pip install -q -e ".[dev]" &&
-        echo -e "\n✅ .venv ready in $WORKTREE_DIR"
-    ) &
-    disown
+if [ "$1" = "0000000000000000000000000000000000000000" ]; then
+  SCRIPT="$(git rev-parse --show-toplevel)/bin/prep-worktree"
+  if [ -x "$SCRIPT" ]; then
+    "$SCRIPT" "$(git rev-parse --show-toplevel)"
+  fi
 fi
