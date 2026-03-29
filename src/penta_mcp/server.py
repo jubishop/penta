@@ -7,7 +7,6 @@ Installed as `penta-mcp-server` entry point.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -15,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from penta.models.agent_type import AgentType
 from penta.models.message_sender import sanitize_external_name
 from penta.services.db_schema import CREATE_TABLES_SQL, db_path_for
+from penta.utils import utc_iso_now
 
 mcp = FastMCP("penta-group-chat")
 
@@ -61,7 +61,7 @@ def send_to_group_chat(directory: str, message: str, your_name: str) -> str:
     try:
         conn.execute(
             "INSERT INTO messages (sender, text, timestamp) VALUES (?, ?, ?)",
-            (name, message, datetime.now(timezone.utc).isoformat()),
+            (name, message, utc_iso_now()),
         )
         conn.commit()
         return "Message posted to group chat."

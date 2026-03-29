@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 import aiosqlite
 
 from penta.services.db_schema import CREATE_TABLES_SQL, db_path_for, default_storage_root
+from penta.utils import utc_iso_now
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class PentaDB:
     async def append_message(self, sender: str, text: str) -> int:
         cur = await self._db.execute(
             "INSERT INTO messages (sender, text, timestamp) VALUES (?, ?, ?)",
-            (sender, text, datetime.now(timezone.utc).isoformat()),
+            (sender, text, utc_iso_now()),
         )
         await self._db.commit()
         self._last_seen_id = cur.lastrowid
@@ -130,7 +130,13 @@ class PentaDB:
                 continue
             if self._on_external_message:
                 for _, sender, text, _ in rows:
-                    self._on_external_message(sender, text)
+                    try:
+                        self._on_external_message(sender, text)
+                    except Exception:
+                        log.exception(
+                            "poll_external_messages: callback failed for message from %s",
+                            sender,
+                        )
 
     # -- Internal --
 

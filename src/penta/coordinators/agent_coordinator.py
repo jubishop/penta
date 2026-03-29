@@ -57,6 +57,14 @@ class AgentCoordinator:
     def set_other_agent_names(self, names: list[str]) -> None:
         self._other_names = names
 
+    def compact(self, limit: int) -> None:
+        """Trim full_history to *limit* entries and adjust indices."""
+        trimmed = max(0, len(self.full_history) - limit)
+        if trimmed:
+            del self.full_history[:trimmed]
+            self.last_prompted_index = max(0, self.last_prompted_index - trimmed)
+            self._pre_prompt_index = max(0, self._pre_prompt_index - trimmed)
+
     def inject_context(self, tagged: TaggedMessage) -> None:
         """Record a message for catch-up delivery on next send()."""
         self.full_history.append(tagged)
@@ -77,7 +85,7 @@ class AgentCoordinator:
             is_streaming=True,
         )
         conversation.append(response)
-        self._set_status(AgentStatus.PROCESSING)
+        self.set_status(AgentStatus.PROCESSING)
 
         system_prompt = self._get_system_prompt()
         self._pre_prompt_index = self.last_prompted_index
@@ -183,7 +191,7 @@ class AgentCoordinator:
                             response.thinking_text += tool_line
                             if self.on_text_delta:
                                 self.on_text_delta(self.config.id, "")
-                        self._set_status(AgentStatus.PROCESSING)
+                        self.set_status(AgentStatus.PROCESSING)
 
                     case StreamEventType.THINKING:
                         response.thinking_text += event.text or ""
@@ -218,7 +226,7 @@ class AgentCoordinator:
             log.info("[%s] Stream cancelled", self.config.name)
             response.is_cancelled = True
             response.mark_complete()
-            self._set_status(AgentStatus.IDLE)
+            self.set_status(AgentStatus.IDLE)
             if self.on_stream_complete:
                 self.on_stream_complete(response, self.config.id)
             return
@@ -231,13 +239,13 @@ class AgentCoordinator:
                 response.text = "[Stream failed unexpectedly]"
             response.is_error = True
             response.mark_complete()
-            self._set_status(AgentStatus.IDLE)
+            self.set_status(AgentStatus.IDLE)
             if self.on_stream_complete:
                 self.on_stream_complete(response, self.config.id)
             return
 
         response.mark_complete()
-        self._set_status(AgentStatus.IDLE)
+        self.set_status(AgentStatus.IDLE)
 
         # Record agent's response in history
         self.full_history.append(
@@ -249,7 +257,7 @@ class AgentCoordinator:
 
     # -- Helpers --
 
-    def _set_status(self, status: AgentStatus) -> None:
+    def set_status(self, status: AgentStatus) -> None:
         self.config.status = status
         if self.on_status_changed:
             self.on_status_changed(self.config.id, status)
