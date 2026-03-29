@@ -69,6 +69,21 @@ async def coordinator(db: PentaDB) -> AgentCoordinator:
 # -- Tests --------------------------------------------------------------------
 
 
+class TestFirstMessageNoCatchUp:
+    """On a fresh chat with no history, the prompt should contain only the
+    current message — no '[Messages since your last response:]' header."""
+
+    @pytest.mark.asyncio
+    async def test_fresh_chat_no_catchup_header(self, coordinator: AgentCoordinator):
+        """First message ever sent should not include catch-up framing."""
+        current = TaggedMessage(sender_label="User", text="hello")
+        prompt = coordinator._build_prompt(current)
+
+        assert "[Messages since your last response:]" not in prompt
+        assert "[New message:]" not in prompt
+        assert "hello" in prompt
+
+
 class TestCatchUpHistoryAfterRestart:
     """After load_chat_history(), the first prompt should replay all prior
     messages as catch-up context (last_prompted_index=0)."""
