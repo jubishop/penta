@@ -13,7 +13,6 @@ from penta.models import (
     Message,
     MessageSender,
     TaggedMessage,
-    group_tag_prefix,
 )
 from penta.services.agent_service import AgentService, StreamEventType
 from penta.services.claude_service import ClaudeService
@@ -141,15 +140,12 @@ class AgentCoordinator:
 
     def _identity_preamble(self) -> str:
         others = ", ".join(self._other_names) if self._other_names else "other agents"
-        prefix = group_tag_prefix(self.config.name)
         return (
             f'You are "{self.config.name}" in a multi-agent group chat called Penta.\n'
             f"Working directory: {self._working_dir}\n"
             f"Other participants: {others}, User.\n"
-            f"Messages tagged [Group - <name>] are from the group chat visible to all.\n"
-            f"Always prefix your response with {prefix} "
-            f"(this tag is required so the chat system can display your message).\n"
-            f"Use @name to address other participants. Respond naturally and concisely."
+            f"Messages tagged [Group - <name>] are from the group chat.\n"
+            f"Use @name to address other participants."
         )
 
     # -- Streaming --

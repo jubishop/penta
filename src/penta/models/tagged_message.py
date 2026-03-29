@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-
-# Shared tag format — used by coordinator prompts and response parsing.
-GROUP_TAG_RE = re.compile(r"^\[Group - [^\]]+\]:\s*")
 
 
 def group_tag_prefix(name: str) -> str:
