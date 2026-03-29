@@ -89,7 +89,8 @@ class ChatRoom(VerticalScroll):
         self.scroll_end(animate=False)
         self.has_new_content = False
 
-    def watch_scroll_y(self, value: float) -> None:
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         """Clear new-content flag when user scrolls back to bottom."""
+        super().watch_scroll_y(old_value, new_value)
         if self.is_at_bottom and self.has_new_content:
             self.has_new_content = False
