@@ -274,7 +274,7 @@ class PentaDB:
                     "poll_external_messages: check failed, will retry"
                 )
                 continue
-            if self._on_external_message:
+            if self._on_external_message and not self._polling_paused:
                 for _, sender, text, _ in rows:
                     try:
                         self._on_external_message(sender, text)

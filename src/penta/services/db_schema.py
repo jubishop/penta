@@ -171,7 +171,10 @@ def run_migrations_sync(conn: sqlite3.Connection) -> None:
     for i, (migrate_sync, _) in enumerate(_MIGRATIONS):
         version = i + 1
         if current < version:
+            # Disable FK during schema changes (SQLite requirement for DDL)
+            conn.execute("PRAGMA foreign_keys=OFF")
             migrate_sync(conn)
+            conn.execute("PRAGMA foreign_keys=ON")
             conn.execute(f"PRAGMA user_version = {version}")
             conn.commit()
 
@@ -183,7 +186,10 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
     for i, (_, migrate_async) in enumerate(_MIGRATIONS):
         version = i + 1
         if current < version:
+            # Disable FK during schema changes (SQLite requirement for DDL)
+            await conn.execute("PRAGMA foreign_keys=OFF")
             await migrate_async(conn)
+            await conn.execute("PRAGMA foreign_keys=ON")
             await conn.execute(f"PRAGMA user_version = {version}")
             await conn.commit()
 

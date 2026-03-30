@@ -278,6 +278,39 @@ class TestAppStateConversationSwitching:
         await state.rename_conversation(state.current_conversation_id, "Renamed")
         assert state.current_conversation_title == "Renamed"
 
+    async def test_switch_to_same_conversation_is_noop(self, state_with_agents):
+        """Switching to the already-active conversation should not tear down coordinators."""
+        state, services = state_with_agents
+
+        # Send a message so there's an active coordinator state
+        services["Claude"].enqueue_text("hi")
+        await state.send_user_message("@Claude hello")
+        await state.router.drain()
+
+        original_coord_ids = set(id(c) for c in state.coordinators.values())
+
+        # Switch to the same conversation
+        await state.switch_conversation(state.current_conversation_id)
+
+        # Coordinators should be the same objects (not rebuilt)
+        assert set(id(c) for c in state.coordinators.values()) == original_coord_ids
+
+    async def test_switch_to_invalid_conversation_raises(self, state_with_agents):
+        """Switching to a nonexistent conversation should raise without tearing down."""
+        state, services = state_with_agents
+        original_coord_ids = set(id(c) for c in state.coordinators.values())
+
+        with pytest.raises(ValueError, match="does not exist"):
+            await state.switch_conversation(9999)
+
+        # Coordinators should still be intact
+        assert set(id(c) for c in state.coordinators.values()) == original_coord_ids
+
+    async def test_delete_nonexistent_conversation_raises(self, state_with_agents):
+        state, services = state_with_agents
+        with pytest.raises(ValueError, match="does not exist"):
+            await state.delete_conversation(9999)
+
 
 # ---------------------------------------------------------------------------
 # Migration from pre-conversation schema
@@ -325,6 +358,7 @@ class TestMigration:
         conn = await aiosqlite.connect(str(old_db_path))
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA busy_timeout=5000")
+        await conn.execute("PRAGMA foreign_keys=ON")
 
         from penta.services.db_schema import run_migrations
 
@@ -344,6 +378,7 @@ class TestMigration:
         conn = await aiosqlite.connect(str(old_db_path))
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA busy_timeout=5000")
+        await conn.execute("PRAGMA foreign_keys=ON")
 
         from penta.services.db_schema import run_migrations
 
@@ -365,6 +400,7 @@ class TestMigration:
         conn = await aiosqlite.connect(str(old_db_path))
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA busy_timeout=5000")
+        await conn.execute("PRAGMA foreign_keys=ON")
 
         from penta.services.db_schema import run_migrations
 
@@ -383,6 +419,7 @@ class TestMigration:
         conn = await aiosqlite.connect(str(old_db_path))
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA busy_timeout=5000")
+        await conn.execute("PRAGMA foreign_keys=ON")
 
         from penta.services.db_schema import run_migrations
 

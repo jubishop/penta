@@ -167,7 +167,12 @@ class AppState:
         ]
 
     async def delete_conversation(self, conversation_id: int) -> bool:
-        """Delete a conversation. Returns False if it's the active or sole conversation."""
+        """Delete a conversation. Returns False if it's the active or sole conversation.
+
+        Raises ValueError if the conversation does not exist.
+        """
+        if not await self.db._conversation_exists(conversation_id):
+            raise ValueError(f"Conversation {conversation_id} does not exist")
         if conversation_id == self.current_conversation_id:
             return False
         rows = await self.db.list_conversations()
@@ -183,6 +188,13 @@ class AppState:
 
     async def switch_conversation(self, conversation_id: int) -> None:
         """Tear down current agent state and rebuild for the target conversation."""
+        if conversation_id == self.current_conversation_id:
+            return
+
+        # 0. Validate target exists before tearing anything down
+        if not await self.db._conversation_exists(conversation_id):
+            raise ValueError(f"Conversation {conversation_id} does not exist")
+
         # 1. Pause external polling so it can't check or deliver during switch
         self.db.pause_polling()
 
