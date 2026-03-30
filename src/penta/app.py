@@ -367,14 +367,13 @@ class PentaApp(App):
         return None
 
     def _on_question_asked(
-        self, agent_id: UUID, questions: list[dict], control_request_id: str,
+        self, agent_id: UUID, questions: list[dict], tool_use_id: str,
     ) -> None:
-        """Show the question picker when Claude tries AskUserQuestion.
+        """Show the question picker when Claude uses AskUserQuestion.
 
-        The tool is denied via the hook (Claude falls back to text),
-        but we show the structured picker for a better UX.  The user's
-        selections are sent as a formatted chat message that Claude
-        receives as a normal user response.
+        The hook HTTP response is blocked until the user answers.
+        Answers are injected via updatedInput so Claude receives them
+        directly as the AskUserQuestion tool result.
         """
         if not self._state:
             return
@@ -382,20 +381,12 @@ class PentaApp(App):
         agent_name = agent.name if agent else "Agent"
 
         def on_answers(answers: dict[str, str] | None) -> None:
+            if not self._state or not self._state._permission_server:
+                return
             if answers is None:
-                return  # User dismissed — Claude already got the denial
-            # Format answers as a user message
-            parts = []
-            for q_text, answer in answers.items():
-                parts.append(f"Q: {q_text}\nA: {answer}")
-            answer_text = "Here are my answers:\n\n" + "\n\n".join(parts)
-            # Send as a normal user message so Claude sees it
-            if self._state:
-                task = asyncio.create_task(
-                    self._state.send_user_message(answer_text)
-                )
-                task.add_done_callback(log_task_error)
-                self._render_new_messages()
+                # User dismissed — provide empty answers so Claude can continue
+                answers = {q.get("question", ""): "" for q in questions}
+            self._state._permission_server.resolve_question(tool_use_id, answers)
 
         self.push_screen(
             QuestionPickerScreen(agent_name, questions),

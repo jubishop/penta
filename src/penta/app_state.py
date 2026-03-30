@@ -486,10 +486,10 @@ class AppState:
     ) -> None:
         """Called by the permission server when AskUserQuestion hook fires.
 
-        Surfaces the structured questions to the TUI. The tool is denied,
-        so Claude will fall back to asking as plain text. The TUI shows
-        the QuestionPickerScreen; the user's answers are sent as a regular
-        chat message that Claude receives naturally.
+        Surfaces the structured questions to the TUI.  The hook HTTP
+        response is blocked until the user answers (via resolve_question).
+        The answers are injected via updatedInput so Claude receives them
+        directly as the AskUserQuestion tool result.
         """
         agent = next(
             (a for a in self.agents if a.type == AgentType.CLAUDE), None,
