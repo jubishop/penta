@@ -65,7 +65,7 @@ def _default_conversation_id(conn: sqlite3.Connection) -> int:
 
 def _resolve_conversation_id(conn: sqlite3.Connection, conversation_id: int | None) -> int | str:
     """Resolve and validate a conversation id. Returns the id or an error string."""
-    cid = conversation_id or _default_conversation_id(conn)
+    cid = conversation_id if conversation_id is not None else _default_conversation_id(conn)
     if conversation_id is not None:
         row = conn.execute(
             "SELECT COUNT(*) FROM conversations WHERE id = ?", (cid,)

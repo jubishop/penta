@@ -62,18 +62,7 @@ _MIGRATE_V1_CREATE_CONVERSATIONS = """
     );
 """
 
-_MIGRATE_V1_ALTER = """
-    CREATE TABLE IF NOT EXISTS sessions_new (
-        agent_name TEXT NOT NULL,
-        conversation_id INTEGER NOT NULL DEFAULT 1 REFERENCES conversations(id),
-        session_id TEXT NOT NULL,
-        PRIMARY KEY (agent_name, conversation_id)
-    );
-    INSERT OR IGNORE INTO sessions_new (agent_name, conversation_id, session_id)
-        SELECT agent_name, 1, session_id FROM sessions;
-    DROP TABLE IF EXISTS sessions;
-    ALTER TABLE sessions_new RENAME TO sessions;
-
+_MIGRATE_V1_INDEXES = """
     CREATE INDEX IF NOT EXISTS idx_messages_conversation
         ON messages(conversation_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_conversation
@@ -85,6 +74,45 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     """Check if a column exists on a table (sync)."""
     cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(c[1] == column for c in cols)
+
+
+def _has_table(conn: sqlite3.Connection, table: str) -> bool:
+    """Check if a table exists (sync)."""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    return row[0] > 0
+
+
+def _rebuild_sessions_sync(conn: sqlite3.Connection) -> None:
+    """Recreate sessions table with composite PK. Handles all partial-run states."""
+    has_old = _has_table(conn, "sessions")
+    has_new = _has_table(conn, "sessions_new")
+
+    if has_old and not has_new:
+        # Normal case: old table exists, create new, copy, drop, rename
+        conn.executescript("""
+            CREATE TABLE sessions_new (
+                agent_name TEXT NOT NULL,
+                conversation_id INTEGER NOT NULL DEFAULT 1 REFERENCES conversations(id),
+                session_id TEXT NOT NULL,
+                PRIMARY KEY (agent_name, conversation_id)
+            );
+            INSERT OR IGNORE INTO sessions_new (agent_name, conversation_id, session_id)
+                SELECT agent_name, 1, session_id FROM sessions;
+            DROP TABLE sessions;
+            ALTER TABLE sessions_new RENAME TO sessions;
+        """)
+    elif has_new and not has_old:
+        # Partial run: old was dropped but rename didn't happen
+        conn.executescript("ALTER TABLE sessions_new RENAME TO sessions;")
+    elif has_new and has_old:
+        # Partial run: new was created but old wasn't dropped yet
+        conn.executescript("""
+            DROP TABLE sessions;
+            ALTER TABLE sessions_new RENAME TO sessions;
+        """)
+    # else: both missing is impossible (sessions always exists in old schema)
 
 
 def _migrate_v1_sync(conn: sqlite3.Connection) -> None:
@@ -110,7 +138,8 @@ def _migrate_v1_sync(conn: sqlite3.Connection) -> None:
             "REFERENCES conversations(id);"
         )
 
-    conn.executescript(_MIGRATE_V1_ALTER)
+    _rebuild_sessions_sync(conn)
+    conn.executescript(_MIGRATE_V1_INDEXES)
 
 
 async def _migrate_v1_async(conn: aiosqlite.Connection) -> None:
@@ -140,7 +169,38 @@ async def _migrate_v1_async(conn: aiosqlite.Connection) -> None:
             "REFERENCES conversations(id);"
         )
 
-    await conn.executescript(_MIGRATE_V1_ALTER)
+    # Rebuild sessions — handle all partial-run states
+    cur = await conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'"
+    )
+    has_old = (await cur.fetchone())[0] > 0
+    cur = await conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions_new'"
+    )
+    has_new = (await cur.fetchone())[0] > 0
+
+    if has_old and not has_new:
+        await conn.executescript("""
+            CREATE TABLE sessions_new (
+                agent_name TEXT NOT NULL,
+                conversation_id INTEGER NOT NULL DEFAULT 1 REFERENCES conversations(id),
+                session_id TEXT NOT NULL,
+                PRIMARY KEY (agent_name, conversation_id)
+            );
+            INSERT OR IGNORE INTO sessions_new (agent_name, conversation_id, session_id)
+                SELECT agent_name, 1, session_id FROM sessions;
+            DROP TABLE sessions;
+            ALTER TABLE sessions_new RENAME TO sessions;
+        """)
+    elif has_new and not has_old:
+        await conn.executescript("ALTER TABLE sessions_new RENAME TO sessions;")
+    elif has_new and has_old:
+        await conn.executescript("""
+            DROP TABLE sessions;
+            ALTER TABLE sessions_new RENAME TO sessions;
+        """)
+
+    await conn.executescript(_MIGRATE_V1_INDEXES)
 
 
 # ---------------------------------------------------------------------------

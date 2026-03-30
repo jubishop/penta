@@ -437,6 +437,80 @@ class TestMigration:
         version = (await cur.fetchone())[0]
         assert version == SCHEMA_VERSION
 
+    async def test_migration_rerun_after_partial_sessions_drop(self, tmp_path: Path):
+        """Simulate crash after sessions was dropped but before sessions_new renamed.
+
+        The migration should handle this partial state on re-run.
+        """
+        import aiosqlite
+
+        db_path = tmp_path / "partial.db"
+        conn = await aiosqlite.connect(str(db_path))
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA foreign_keys=ON")
+
+        # Create the old schema
+        await conn.executescript("""
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender TEXT NOT NULL,
+                text TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            );
+        """)
+        await conn.execute(
+            "INSERT INTO messages (sender, text, timestamp) VALUES (?, ?, ?)",
+            ("User", "test", "2026-01-01T00:00:00+00:00"),
+        )
+
+        # Simulate partial migration: conversations exists, sessions was dropped,
+        # sessions_new exists but wasn't renamed
+        await conn.executescript("""
+            CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE sessions_new (
+                agent_name TEXT NOT NULL,
+                conversation_id INTEGER NOT NULL DEFAULT 1,
+                session_id TEXT NOT NULL,
+                PRIMARY KEY (agent_name, conversation_id)
+            );
+        """)
+        await conn.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (1, ?, ?, ?)",
+            ("Default", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
+        )
+        # conversation_id column already added to messages
+        await conn.executescript(
+            "ALTER TABLE messages ADD COLUMN conversation_id INTEGER NOT NULL DEFAULT 1;"
+        )
+        await conn.commit()
+
+        # Now run migrations — should handle the partial state
+        from penta.services.db_schema import run_migrations
+
+        await run_migrations(conn)
+
+        # Verify sessions table exists and is usable
+        await conn.execute(
+            "INSERT INTO sessions (agent_name, conversation_id, session_id) VALUES (?, ?, ?)",
+            ("Claude", 1, "test-session"),
+        )
+        cur = await conn.execute("SELECT * FROM sessions")
+        rows = await cur.fetchall()
+        assert len(rows) == 1
+
+        # Verify sessions_new is gone
+        cur = await conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions_new'"
+        )
+        assert (await cur.fetchone())[0] == 0
+
+        await conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Validation

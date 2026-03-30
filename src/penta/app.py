@@ -146,7 +146,7 @@ class PentaApp(App):
             chat_room.scroll_to_bottom()
 
     async def on_input_bar_submitted(self, event: InputBar.Submitted) -> None:
-        if not self._state:
+        if not self._state or self._switching:
             return
         await self._state.send_user_message(event.text.strip())
         self._render_new_messages()
