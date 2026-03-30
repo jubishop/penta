@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -163,7 +163,7 @@ class PentaApp(App):
             return
         self._switching = True
         try:
-            title = f"Chat {datetime.now(timezone.utc):%Y-%m-%d %H:%M}"
+            title = f"Chat {datetime.now():%Y-%m-%d %H:%M:%S}"
             info = await self._state.create_conversation(title)
             await self._state.switch_conversation(info.id)
         finally:

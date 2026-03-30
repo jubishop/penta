@@ -183,9 +183,8 @@ class AppState:
 
     async def switch_conversation(self, conversation_id: int) -> None:
         """Tear down current agent state and rebuild for the target conversation."""
-        # 1. Pause external polling so it can't inject messages during switch
-        saved_callback = self.db._on_external_message
-        self.db._on_external_message = None
+        # 1. Pause external polling so it can't check or deliver during switch
+        self.db.pause_polling()
 
         try:
             # 2. Cancel active streams
@@ -199,7 +198,7 @@ class AppState:
             for coord in self.coordinators.values():
                 await coord.shutdown()
 
-            # 5. Switch DB context
+            # 5. Switch DB context (resets _last_seen_id for the new conversation)
             await self.db.set_conversation(conversation_id)
 
             # 6. Clear in-memory state (same list/dict objects — router refs stay valid)
@@ -221,8 +220,8 @@ class AppState:
                     break
 
         finally:
-            # 10. Restore external polling
-            self.db._on_external_message = saved_callback
+            # 10. Resume external polling
+            self.db.resume_polling()
 
         # 11. Notify UI
         if self.on_conversation_switched:

@@ -63,6 +63,18 @@ def _default_conversation_id(conn: sqlite3.Connection) -> int:
     return row[0] if row else 1
 
 
+def _resolve_conversation_id(conn: sqlite3.Connection, conversation_id: int | None) -> int | str:
+    """Resolve and validate a conversation id. Returns the id or an error string."""
+    cid = conversation_id or _default_conversation_id(conn)
+    if conversation_id is not None:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM conversations WHERE id = ?", (cid,)
+        ).fetchone()
+        if row[0] == 0:
+            return f"Error: conversation {cid} does not exist."
+    return cid
+
+
 @mcp.tool()
 def list_conversations(directory: str) -> str:
     """List all conversations for the given project directory."""
@@ -98,12 +110,14 @@ def get_group_chat(
 
     conn = _open_db(directory)
     try:
-        cid = conversation_id or _default_conversation_id(conn)
+        resolved = _resolve_conversation_id(conn, conversation_id)
+        if isinstance(resolved, str):
+            return resolved
         rows = conn.execute(
             "SELECT id, sender, text, timestamp FROM messages "
             "WHERE conversation_id = ? "
             "ORDER BY id DESC LIMIT ?",
-            (cid, last_n),
+            (resolved, last_n),
         ).fetchall()[::-1]
         if not rows:
             return f"No group chat messages yet for {directory}."
@@ -128,15 +142,17 @@ def send_to_group_chat(
     name = sanitize_external_name(your_name.strip(), AgentType.all_names())
     conn = _open_db(directory)
     try:
-        cid = conversation_id or _default_conversation_id(conn)
+        resolved = _resolve_conversation_id(conn, conversation_id)
+        if isinstance(resolved, str):
+            return resolved
         now = utc_iso_now()
         conn.execute(
             "INSERT INTO messages (conversation_id, sender, text, timestamp) VALUES (?, ?, ?, ?)",
-            (cid, name, message, now),
+            (resolved, name, message, now),
         )
         conn.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?",
-            (now, cid),
+            (now, resolved),
         )
         conn.commit()
         return "Message posted to group chat."

@@ -43,6 +43,7 @@ class PentaDB:
         self._last_seen_id: int = 0
         self._local_ids: set[int] = set()
         self._on_external_message: Callable[[str, str], None] | None = None
+        self._polling_paused: bool = False
 
     @property
     def _db(self) -> aiosqlite.Connection:
@@ -125,7 +126,15 @@ class PentaDB:
         )
         return await cur.fetchall()
 
+    async def _conversation_exists(self, conversation_id: int) -> bool:
+        cur = await self._db.execute(
+            "SELECT COUNT(*) FROM conversations WHERE id = ?", (conversation_id,)
+        )
+        return (await cur.fetchone())[0] > 0
+
     async def delete_conversation(self, conversation_id: int) -> None:
+        if not await self._conversation_exists(conversation_id):
+            raise ValueError(f"Conversation {conversation_id} does not exist")
         await self._db.execute(
             "DELETE FROM messages WHERE conversation_id = ?", (conversation_id,)
         )
@@ -138,6 +147,8 @@ class PentaDB:
         await self._db.commit()
 
     async def rename_conversation(self, conversation_id: int, title: str) -> None:
+        if not await self._conversation_exists(conversation_id):
+            raise ValueError(f"Conversation {conversation_id} does not exist")
         await self._db.execute(
             "UPDATE conversations SET title = ? WHERE id = ?",
             (title, conversation_id),
@@ -236,6 +247,14 @@ class PentaDB:
     ) -> None:
         self._on_external_message = callback
 
+    def pause_polling(self) -> None:
+        """Pause external change polling. The poll loop skips checks while paused."""
+        self._polling_paused = True
+
+    def resume_polling(self) -> None:
+        """Resume external change polling."""
+        self._polling_paused = False
+
     async def poll_external_messages(self) -> None:
         """Background task: check for external writes every 500ms."""
         while True:
@@ -243,6 +262,8 @@ class PentaDB:
             if self._conn is None:
                 log.info("poll_external_messages: DB closed, stopping")
                 return
+            if self._polling_paused:
+                continue
             try:
                 rows = await self.check_external_changes()
             except Exception:

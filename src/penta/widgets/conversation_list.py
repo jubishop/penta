@@ -37,7 +37,7 @@ class ConversationItem(ListItem):
 
     def compose(self) -> ComposeResult:
         marker = " *" if self.is_current else ""
-        updated = self.info.updated_at.strftime("%Y-%m-%d %H:%M")
+        updated = self.info.updated_at.astimezone().strftime("%Y-%m-%d %H:%M")
         safe_title = rich_escape(self.info.title)
         yield Static(
             f"{safe_title}{marker}  [dim]{updated}[/]",

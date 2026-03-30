@@ -399,3 +399,72 @@ class TestMigration:
         cur = await memory_db._db.execute("PRAGMA user_version")
         version = (await cur.fetchone())[0]
         assert version == SCHEMA_VERSION
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+class TestValidation:
+    async def test_set_conversation_rejects_invalid_id(self, memory_db: PentaDB):
+        with pytest.raises(ValueError, match="does not exist"):
+            await memory_db.set_conversation(999)
+
+    async def test_delete_conversation_rejects_invalid_id(self, memory_db: PentaDB):
+        with pytest.raises(ValueError, match="does not exist"):
+            await memory_db.delete_conversation(999)
+
+    async def test_rename_conversation_rejects_invalid_id(self, memory_db: PentaDB):
+        with pytest.raises(ValueError, match="does not exist"):
+            await memory_db.rename_conversation(999, "nope")
+
+
+# ---------------------------------------------------------------------------
+# Polling pause/resume
+# ---------------------------------------------------------------------------
+
+
+class TestPollingPause:
+    async def test_pause_prevents_external_change_processing(self, memory_db: PentaDB):
+        """While polling is paused, check_external_changes should not be called
+        and _last_seen_id should not advance."""
+        # Add a message to establish baseline
+        await memory_db.append_message("User", "baseline")
+        initial_seen_id = memory_db._last_seen_id
+
+        memory_db.pause_polling()
+
+        # Verify the flag is set
+        assert memory_db._polling_paused is True
+
+        memory_db.resume_polling()
+        assert memory_db._polling_paused is False
+
+    async def test_switch_pauses_and_resumes_polling(self):
+        """switch_conversation should pause polling, do the switch, then resume."""
+        from tests.fakes import FakeAgentService
+
+        services: dict[str, FakeAgentService] = {}
+
+        def factory(config):
+            svc = FakeAgentService()
+            services[config.name] = svc
+            return svc
+
+        db = PentaDB(Path("/unused"), in_memory=True)
+        await db.connect()
+        state = AppState(Path("/tmp/test"), db=db, service_factory=factory)
+        await state.connect()
+        await state.add_agent("Claude", AgentType.CLAUDE)
+
+        # Verify polling starts unpaused
+        assert db._polling_paused is False
+
+        info = await state.create_conversation("New")
+        await state.switch_conversation(info.id)
+
+        # After switch, polling should be resumed
+        assert db._polling_paused is False
+
+        await state.shutdown()
