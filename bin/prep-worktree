@@ -1,0 +1,22 @@
+#!/bin/bash
+# Prepares a worktree by creating a .venv and installing the project.
+# Usage: prep-worktree [worktree-path]
+# Runs silently in the background — check the log file for status.
+
+set -eo pipefail
+
+WORKTREE_PATH="${1:-$(pwd)}"
+WORKTREE_PATH="$(cd "$WORKTREE_PATH" && pwd)"
+
+if [ -d "$WORKTREE_PATH/.venv" ]; then
+  exit 0
+fi
+
+BUILD_LOG="/tmp/prep-worktree-$(basename "$WORKTREE_PATH").log"
+
+(
+  cd "$WORKTREE_PATH" &&
+  python3 -m venv --upgrade-deps .venv &&
+  .venv/bin/pip install -q -e ".[dev]"
+) > "$BUILD_LOG" 2>&1 </dev/null &
+disown 2>/dev/null || true

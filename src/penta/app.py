@@ -48,6 +48,7 @@ class PentaApp(App):
 
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
+        ("escape", "stop_agents", "Stop agents"),
         ("ctrl+enter", "submit", "Send"),
         ("ctrl+b", "scroll_to_new", "Jump to new"),
         ("ctrl+n", "new_conversation", "New chat"),
@@ -57,6 +58,18 @@ class PentaApp(App):
     def action_quit(self) -> None:
         log.info("action_quit triggered")
         self.exit()
+
+    def action_stop_agents(self) -> None:
+        """Stop all currently streaming agents."""
+        if self._state:
+            self._state.cancel_all_streaming()
+
+    def on_status_indicator_stop_requested(
+        self, event: StatusIndicator.StopRequested,
+    ) -> None:
+        """Handle click-to-stop on a processing StatusIndicator."""
+        if self._state:
+            self._state.cancel_agent(event.agent_id)
 
     def _handle_exception(self, error: Exception) -> None:
         log.exception("Unhandled exception — app will exit: %s", error)

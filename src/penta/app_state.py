@@ -122,6 +122,23 @@ class AppState:
         lower = name.lower()
         return next((a for a in self.agents if a.name.lower() == lower), None)
 
+    def cancel_agent(self, agent_id: UUID) -> bool:
+        """Cancel a specific agent's current stream. Returns True if was streaming."""
+        coord = self.coordinators.get(agent_id)
+        if coord and coord.config.status == AgentStatus.PROCESSING:
+            coord.cancel()
+            return True
+        return False
+
+    def cancel_all_streaming(self) -> int:
+        """Cancel all currently streaming agents. Returns count cancelled."""
+        count = 0
+        for coord in self.coordinators.values():
+            if coord.config.status == AgentStatus.PROCESSING:
+                coord.cancel()
+                count += 1
+        return count
+
     @property
     def directory_name(self) -> str:
         return self.directory.name

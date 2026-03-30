@@ -360,6 +360,82 @@ class TestSendWhileStreamingWaitsForCleanup:
         await asyncio.sleep(0)
 
 
+class TestToolUseNeverLeaksIntoBody:
+    """Regression: tool use indicators must always go to thinking_text,
+    even when text has already been emitted to the message body."""
+
+    async def test_tool_use_after_text_stays_in_thinking(
+        self, memory_db: PentaDB,
+    ):
+        """Text → tool → text: the tool line must land in thinking_text,
+        not response.text."""
+        fake = FakeAgentService()
+        fake.enqueue_events([
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text="Here's my analysis."),
+            StreamEvent(type=StreamEventType.TOOL_USE_STARTED, tool_name="Edit"),
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text="\n\nDone."),
+            StreamEvent(type=StreamEventType.DONE),
+        ])
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="fix the bug")
+        response = coord.send(tagged, conversation)
+        await response.wait_for_completion()
+
+        assert "Using Edit" not in response.text
+        assert "Using Edit" in response.thinking_text
+        assert "Here's my analysis." in response.text
+        assert "Done." in response.text
+
+    async def test_tool_use_before_text_stays_in_thinking(
+        self, memory_db: PentaDB,
+    ):
+        """Tool → text: tool line in thinking, text in body."""
+        fake = FakeAgentService()
+        fake.enqueue_events([
+            StreamEvent(type=StreamEventType.TOOL_USE_STARTED, tool_name="Read"),
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text="Found it."),
+            StreamEvent(type=StreamEventType.DONE),
+        ])
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="check")
+        response = coord.send(tagged, conversation)
+        await response.wait_for_completion()
+
+        assert "Using Read" not in response.text
+        assert "Using Read" in response.thinking_text
+        assert response.text == "Found it."
+
+    async def test_multiple_tools_between_text_blocks(
+        self, memory_db: PentaDB,
+    ):
+        """Text → tool → tool → text: both tool lines in thinking."""
+        fake = FakeAgentService()
+        fake.enqueue_events([
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text="Let me check."),
+            StreamEvent(type=StreamEventType.TOOL_USE_STARTED, tool_name="Grep"),
+            StreamEvent(type=StreamEventType.TOOL_USE_STARTED, tool_name="Read"),
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text="\n\nAll good."),
+            StreamEvent(type=StreamEventType.DONE),
+        ])
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="review")
+        response = coord.send(tagged, conversation)
+        await response.wait_for_completion()
+
+        assert "Using Grep" not in response.text
+        assert "Using Read" not in response.text
+        assert "Using Grep" in response.thinking_text
+        assert "Using Read" in response.thinking_text
+        assert "Let me check." in response.text
+        assert "All good." in response.text
+
+
 class TestServiceFailureDoesNotWedgeUI:
     """If the service raises an unexpected exception, the message must still
     be marked complete and the UI cleaned up."""
@@ -389,3 +465,265 @@ class TestServiceFailureDoesNotWedgeUI:
         assert "failed" in completed[0].text.lower()
         # Status should be IDLE, not stuck
         assert coord.config.status == AgentStatus.IDLE
+
+
+class TestTripleCancellation:
+    """Rapid-fire A→B→C where each replacement send cancels the previous one.
+
+    Verifies that last_prompted_index rollback stays consistent across
+    multiple cancellations and only the final stream's response is kept."""
+
+    async def test_double_cancel_index_stays_consistent(
+        self, memory_db: PentaDB,
+    ):
+        """Three sends in quick succession: first two are cancelled, third
+        completes.  The final prompt must contain all three messages."""
+        fake = FakeAgentService()
+        fake.enqueue_hang()       # first send — will be cancelled
+        fake.enqueue_hang()       # second send — will also be cancelled
+        fake.enqueue_text("done") # third send — completes
+        coord = _make_coordinator(memory_db, fake)
+
+        # Seed: prime the coordinator with a user message so we have a baseline.
+        user_msg = TaggedMessage(sender_label="User", text="hello")
+        coord._build_prompt(user_msg)
+        coord.full_history.append(user_msg)
+        coord.last_prompted_index = len(coord.full_history)
+
+        conversation: list[Message] = []
+
+        # Send A — starts streaming, hangs.
+        msg_a = TaggedMessage(sender_label="alice", text="@test-agent from alice")
+        resp_a = coord.send(msg_a, conversation)
+        await _let_task_start()
+
+        # Send B — cancels A, starts streaming, hangs.
+        msg_b = TaggedMessage(sender_label="bob", text="@test-agent from bob")
+        resp_b = coord.send(msg_b, conversation)
+        await resp_a.wait_for_completion()
+        assert resp_a.is_cancelled is True
+
+        await _let_task_start()
+
+        # Send C — cancels B, starts streaming, completes.
+        msg_c = TaggedMessage(sender_label="carol", text="@test-agent from carol")
+        resp_c = coord.send(msg_c, conversation)
+        await resp_b.wait_for_completion()
+        assert resp_b.is_cancelled is True
+
+        await resp_c.wait_for_completion()
+        assert resp_c.is_cancelled is False
+        assert resp_c.text == "done"
+
+    async def test_double_cancel_final_prompt_contains_all_messages(
+        self, memory_db: PentaDB,
+    ):
+        """The third (final) prompt must include messages from both
+        cancelled streams as catch-up context."""
+        fake = FakeAgentService()
+        fake.enqueue_hang()
+        fake.enqueue_hang()
+        fake.enqueue_text("done")
+        coord = _make_coordinator(memory_db, fake)
+
+        user_msg = TaggedMessage(sender_label="User", text="hello")
+        coord._build_prompt(user_msg)
+        coord.full_history.append(user_msg)
+        coord.last_prompted_index = len(coord.full_history)
+
+        conversation: list[Message] = []
+
+        # Capture all prompts sent to the service.
+        prompts: list[str] = []
+        original_build = coord._build_prompt
+
+        def capturing_build(tagged):
+            result = original_build(tagged)
+            prompts.append(result)
+            return result
+
+        coord._build_prompt = capturing_build  # type: ignore[assignment]
+
+        # Send A, B, C in rapid succession.
+        msg_a = TaggedMessage(sender_label="alice", text="from alice")
+        resp_a = coord.send(msg_a, conversation)
+        await _let_task_start()
+
+        msg_b = TaggedMessage(sender_label="bob", text="from bob")
+        resp_b = coord.send(msg_b, conversation)
+        await resp_a.wait_for_completion()
+        await _let_task_start()
+
+        msg_c = TaggedMessage(sender_label="carol", text="from carol")
+        coord.send(msg_c, conversation)
+        await resp_b.wait_for_completion()
+
+        # The third prompt (index 2) must contain alice, bob, AND carol.
+        final_prompt = prompts[2]
+        assert "from alice" in final_prompt
+        assert "from bob" in final_prompt
+        assert "from carol" in final_prompt
+
+    async def test_double_cancel_only_final_response_in_history(
+        self, memory_db: PentaDB,
+    ):
+        """Only the final (non-cancelled) response should appear in
+        full_history.  The two cancelled responses must not."""
+        fake = FakeAgentService()
+        fake.enqueue_hang()
+        fake.enqueue_hang()
+        fake.enqueue_text("final answer")
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+        history_before = len(coord.full_history)
+
+        msg_a = TaggedMessage(sender_label="alice", text="from alice")
+        resp_a = coord.send(msg_a, conversation)
+        await _let_task_start()
+
+        msg_b = TaggedMessage(sender_label="bob", text="from bob")
+        resp_b = coord.send(msg_b, conversation)
+        await resp_a.wait_for_completion()
+        await _let_task_start()
+
+        msg_c = TaggedMessage(sender_label="carol", text="from carol")
+        resp_c = coord.send(msg_c, conversation)
+        await resp_b.wait_for_completion()
+        await resp_c.wait_for_completion()
+
+        agent_replies = [
+            m
+            for m in coord.full_history[history_before:]
+            if m.sender_label == coord.config.name
+        ]
+        assert len(agent_replies) == 1
+        assert agent_replies[0].text == "final answer"
+
+
+class TestExplicitCancel:
+    """cancel() called externally (not via replacement send) must
+    interrupt the stream and fire the completion callback."""
+
+    async def test_cancel_interrupts_stream(
+        self, coordinator: AgentCoordinator, fake: FakeAgentService,
+    ):
+        fake.enqueue_hang()
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="hello")
+
+        response = coordinator.send(tagged, conversation)
+        await _let_task_start()
+        assert response.text == "partial"
+
+        coordinator.cancel()
+        await response.wait_for_completion()
+
+        assert response.is_cancelled is True
+        assert response.is_streaming is False
+        assert coordinator.config.status == AgentStatus.IDLE
+
+    async def test_cancel_fires_stream_complete_callback(
+        self, coordinator: AgentCoordinator, fake: FakeAgentService,
+    ):
+        fake.enqueue_hang()
+
+        completed: list[Message] = []
+        coordinator.on_stream_complete = lambda msg, _aid: completed.append(msg)
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="hello")
+        response = coordinator.send(tagged, conversation)
+        await _let_task_start()
+
+        coordinator.cancel()
+        await response.wait_for_completion()
+
+        assert len(completed) == 1
+        assert completed[0].is_cancelled is True
+
+    async def test_cancel_when_idle_is_noop(
+        self, coordinator: AgentCoordinator, fake: FakeAgentService,
+    ):
+        """Calling cancel() when no stream is active should not raise."""
+        coordinator.cancel()
+        await _let_task_start()  # let the async cancel task run
+        assert fake.cancel_called is True
+
+
+class TestPartialTextFromCancelledStream:
+    """Verify that partial text streamed before cancellation doesn't
+    leak into coordinator history or subsequent prompts."""
+
+    async def test_partial_text_not_in_history(
+        self, memory_db: PentaDB,
+    ):
+        """Cancelled stream's partial text must not appear in full_history."""
+        fake = FakeAgentService()
+        fake.enqueue_hang(prefix_text="leaked partial")
+        fake.enqueue_text("clean response")
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+        history_before = len(coord.full_history)
+
+        # First send — streams "leaked partial" then hangs.
+        resp1 = coord.send(
+            TaggedMessage(sender_label="User", text="first"), conversation,
+        )
+        await _let_task_start()
+        assert resp1.text == "leaked partial"
+
+        # Second send — cancels first, completes normally.
+        resp2 = coord.send(
+            TaggedMessage(sender_label="User", text="second"), conversation,
+        )
+        await resp1.wait_for_completion()
+        await resp2.wait_for_completion()
+
+        all_texts = [m.text for m in coord.full_history[history_before:]]
+        assert "leaked partial" not in all_texts
+
+    async def test_partial_text_not_in_subsequent_prompt(
+        self, memory_db: PentaDB,
+    ):
+        """A prompt built after a cancelled stream must not include
+        the partial text as catch-up context."""
+        fake = FakeAgentService()
+        fake.enqueue_hang(prefix_text="leaked partial")
+        fake.enqueue_text("clean response")
+        fake.enqueue_text("third response")
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+
+        # First send — streams partial then hangs.
+        resp1 = coord.send(
+            TaggedMessage(sender_label="User", text="first"), conversation,
+        )
+        await _let_task_start()
+
+        # Second send — cancels first.
+        resp2 = coord.send(
+            TaggedMessage(sender_label="User", text="second"), conversation,
+        )
+        await resp1.wait_for_completion()
+        await resp2.wait_for_completion()
+
+        # Third send — prompt should not contain "leaked partial".
+        prompts: list[str] = []
+        original_build = coord._build_prompt
+
+        def capturing_build(tagged):
+            result = original_build(tagged)
+            prompts.append(result)
+            return result
+
+        coord._build_prompt = capturing_build  # type: ignore[assignment]
+        resp3 = coord.send(
+            TaggedMessage(sender_label="User", text="third"), conversation,
+        )
+        await resp3.wait_for_completion()
+
+        assert "leaked partial" not in prompts[0]
