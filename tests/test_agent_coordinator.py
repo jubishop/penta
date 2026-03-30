@@ -727,3 +727,196 @@ class TestPartialTextFromCancelledStream:
         await resp3.wait_for_completion()
 
         assert "leaked partial" not in prompts[0]
+
+
+class TestQuestionEvent:
+    """Coordinator handles QUESTION events from the service."""
+
+    async def test_question_sets_waiting_for_user(
+        self, memory_db: PentaDB,
+    ):
+        fake = FakeAgentService()
+        fake.enqueue_question(
+            questions=[{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}],
+        )
+        coord = _make_coordinator(memory_db, fake)
+
+        statuses: list[AgentStatus] = []
+        coord.on_status_changed = lambda _id, s: statuses.append(s)
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="plan something")
+        response = coord.send(tagged, conversation)
+        await asyncio.sleep(0)
+
+        # Should be WAITING_FOR_USER
+        assert AgentStatus.WAITING_FOR_USER in statuses
+
+        # Answer the question to unblock
+        await coord.respond_to_question(
+            "cr_1",
+            [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}],
+            {"Which?": "A"},
+        )
+        await response.wait_for_completion()
+
+        assert response.text == "Thanks for answering!"
+        assert AgentStatus.PROCESSING in statuses
+
+    async def test_question_fires_callback(
+        self, memory_db: PentaDB,
+    ):
+        fake = FakeAgentService()
+        questions = [{"question": "Pick one", "options": [{"label": "X"}]}]
+        fake.enqueue_question(questions=questions, control_request_id="cr_q")
+        coord = _make_coordinator(memory_db, fake)
+
+        asked: list[tuple] = []
+        coord.on_question_asked = lambda aid, qs, crid: asked.append((aid, qs, crid))
+
+        conversation: list[Message] = []
+        tagged = TaggedMessage(sender_label="User", text="go")
+        coord.send(tagged, conversation)
+        await asyncio.sleep(0)
+
+        assert len(asked) == 1
+        assert asked[0][1] == questions
+        assert asked[0][2] == "cr_q"
+
+        # Unblock
+        await coord.respond_to_question("cr_q", questions, {"Pick one": "X"})
+
+    async def test_respond_to_question_calls_service_respond(
+        self, memory_db: PentaDB,
+    ):
+        fake = FakeAgentService()
+        fake.enqueue_question(questions=[{"question": "Q?"}], control_request_id="cr_5")
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+        coord.send(TaggedMessage(sender_label="User", text="go"), conversation)
+        await asyncio.sleep(0)
+
+        await coord.respond_to_question("cr_5", [{"question": "Q?"}], {"Q?": "answer"})
+
+        assert len(fake.respond_calls) == 1
+        payload = fake.respond_calls[0]
+        assert payload["type"] == "control_response"
+        assert payload["id"] == "cr_5"
+        assert payload["allow"] is True
+        assert payload["updated_input"]["questions"] == [{"question": "Q?"}]
+        assert payload["updated_input"]["answers"] == {"Q?": "answer"}
+
+
+class TestPlanReviewEvent:
+    """Coordinator handles PLAN_REVIEW events from the service."""
+
+    async def test_plan_review_sets_waiting_for_user(
+        self, memory_db: PentaDB,
+    ):
+        fake = FakeAgentService()
+        fake.enqueue_plan_review(plan_text="## My Plan")
+        coord = _make_coordinator(memory_db, fake)
+
+        statuses: list[AgentStatus] = []
+        coord.on_status_changed = lambda _id, s: statuses.append(s)
+
+        conversation: list[Message] = []
+        coord.send(TaggedMessage(sender_label="User", text="plan it"), conversation)
+        await asyncio.sleep(0)
+
+        assert AgentStatus.WAITING_FOR_USER in statuses
+
+        # Approve to unblock
+        await coord.approve_plan("cr_plan_1")
+        # Let the stream finish
+        await asyncio.sleep(0)
+
+    async def test_plan_review_fires_callback(
+        self, memory_db: PentaDB,
+    ):
+        fake = FakeAgentService()
+        fake.enqueue_plan_review(plan_text="step 1\nstep 2", control_request_id="cr_p2")
+        coord = _make_coordinator(memory_db, fake)
+
+        reviews: list[tuple] = []
+        coord.on_plan_review = lambda aid, pt, crid: reviews.append((aid, pt, crid))
+
+        conversation: list[Message] = []
+        coord.send(TaggedMessage(sender_label="User", text="go"), conversation)
+        await asyncio.sleep(0)
+
+        assert len(reviews) == 1
+        assert reviews[0][1] == "step 1\nstep 2"
+        assert reviews[0][2] == "cr_p2"
+
+        # Unblock
+        await coord.approve_plan("cr_p2")
+
+    async def test_approve_plan_calls_service_respond(
+        self, memory_db: PentaDB,
+    ):
+        fake = FakeAgentService()
+        fake.enqueue_plan_review(plan_text="plan", control_request_id="cr_p3")
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+        coord.send(TaggedMessage(sender_label="User", text="go"), conversation)
+        await asyncio.sleep(0)
+
+        await coord.approve_plan("cr_p3")
+
+        assert len(fake.respond_calls) == 1
+        payload = fake.respond_calls[0]
+        assert payload["type"] == "control_response"
+        assert payload["id"] == "cr_p3"
+        assert payload["allow"] is True
+
+    async def test_reject_plan_calls_service_respond_with_deny(
+        self, memory_db: PentaDB,
+    ):
+        fake = FakeAgentService()
+        fake.enqueue_plan_review(plan_text="plan", control_request_id="cr_p4")
+        coord = _make_coordinator(memory_db, fake)
+
+        conversation: list[Message] = []
+        coord.send(TaggedMessage(sender_label="User", text="go"), conversation)
+        await asyncio.sleep(0)
+
+        await coord.reject_plan("cr_p4", "needs more detail")
+
+        assert len(fake.respond_calls) == 1
+        payload = fake.respond_calls[0]
+        assert payload["type"] == "control_response"
+        assert payload["id"] == "cr_p4"
+        assert payload["allow"] is False
+        assert payload["message"] == "needs more detail"
+
+
+class TestCancelDuringWaitingForUser:
+    """Cancelling during WAITING_FOR_USER should clean up properly."""
+
+    async def test_cancel_during_question(
+        self, memory_db: PentaDB,
+    ):
+        fake = FakeAgentService()
+        fake.enqueue_question(questions=[{"question": "Q?"}])
+        coord = _make_coordinator(memory_db, fake)
+
+        completed: list[Message] = []
+        coord.on_stream_complete = lambda msg, _aid: completed.append(msg)
+
+        conversation: list[Message] = []
+        response = coord.send(
+            TaggedMessage(sender_label="User", text="go"), conversation,
+        )
+        await asyncio.sleep(0)
+
+        assert coord.config.status == AgentStatus.WAITING_FOR_USER
+
+        coord.cancel()
+        await response.wait_for_completion()
+
+        assert response.is_cancelled is True
+        assert coord.config.status == AgentStatus.IDLE
+        assert len(completed) == 1

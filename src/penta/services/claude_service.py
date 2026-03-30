@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import AsyncIterator
 
@@ -10,6 +11,8 @@ log = logging.getLogger(__name__)
 
 class ClaudeService(CliAgentService):
     """Claude CLI agent — thin wrapper over CliAgentService."""
+
+    _needs_stdin: bool = True
 
     def __init__(
         self,
@@ -36,7 +39,8 @@ class ClaudeService(CliAgentService):
         system_prompt: str | None,
     ) -> list[str]:
         args = ["-p", "--verbose", "--output-format", "stream-json",
-                "--include-partial-messages", "--dangerously-skip-permissions"]
+                "--input-format", "stream-json",
+                "--include-partial-messages"]
 
         if self._model:
             args += ["--model", self._model]
@@ -49,6 +53,19 @@ class ClaudeService(CliAgentService):
 
         args.append(prompt)
         return args
+
+    async def _auto_approve(self, request_id: str) -> None:
+        """Auto-approve a control_request by writing to stdin."""
+        proc = self._current_process
+        if proc and proc.stdin:
+            response = {
+                "type": "control_response",
+                "id": request_id,
+                "allow": True,
+            }
+            line = json.dumps(response).encode() + b"\n"
+            proc.stdin.write(line)
+            await proc.stdin.drain()
 
     async def _parse_line(self, data: dict) -> AsyncIterator[StreamEvent]:
         msg_type = data.get("type")
@@ -75,6 +92,39 @@ class ClaudeService(CliAgentService):
                     type=StreamEventType.WARNING,
                     error=f"Retrying (attempt {attempt})...",
                 )
+
+        elif msg_type == "control_request":
+            subtype = data.get("subtype")
+            if subtype == "can_use_tool":
+                tool = data.get("tool", {})
+                tool_name = tool.get("name", "")
+                request_id = data.get("id", "")
+                tool_input = tool.get("input", {})
+
+                if tool_name == "AskUserQuestion":
+                    questions = tool_input.get("questions", [])
+                    yield StreamEvent(
+                        type=StreamEventType.QUESTION,
+                        questions=questions,
+                        control_request_id=request_id,
+                        tool_name=tool_name,
+                    )
+                elif tool_name == "ExitPlanMode":
+                    plan = tool_input.get("plan", "")
+                    yield StreamEvent(
+                        type=StreamEventType.PLAN_REVIEW,
+                        plan_text=plan,
+                        control_request_id=request_id,
+                        tool_name=tool_name,
+                    )
+                else:
+                    # Auto-approve all other tools
+                    await self._auto_approve(request_id)
+                    yield StreamEvent(
+                        type=StreamEventType.TOOL_USE_STARTED,
+                        tool_name=tool_name,
+                        tool_id=tool.get("id", ""),
+                    )
 
         elif msg_type == "stream_event":
             event = data.get("event", {})

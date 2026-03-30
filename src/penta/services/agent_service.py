@@ -37,6 +37,8 @@ class StreamEventType(Enum):
     WARNING = auto()
     ERROR = auto()
     USAGE = auto()
+    QUESTION = auto()
+    PLAN_REVIEW = auto()
     DONE = auto()
 
 
@@ -51,13 +53,17 @@ class StreamEvent:
     request_id: str | None = None
     error: str | None = None
     usage: dict | None = None
+    questions: list[dict] | None = None
+    plan_text: str | None = None
+    control_request_id: str | None = None
 
 
 class AgentService(ABC):
     """Pure interface — test doubles inherit from this directly.
 
-    Both Claude (--dangerously-skip-permissions) and Codex (-a never)
-    auto-approve all tool use at the CLI level.
+    Claude uses ``--input-format stream-json`` for bidirectional streaming
+    and auto-approves regular tool use via control_response.
+    Codex uses ``-a never`` to auto-approve at the CLI level.
     """
 
     @abstractmethod
@@ -75,12 +81,23 @@ class AgentService(ABC):
     @abstractmethod
     async def shutdown(self) -> None: ...
 
+    async def respond(self, payload: dict) -> None:
+        """Send a control_response back to the subprocess stdin.
+
+        Only meaningful for services that support bidirectional streaming.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support respond()"
+        )
+
 
 class CliAgentService(AgentService):
     """Shared subprocess lifecycle for CLI-based agents.
 
     Subclasses only need to implement ``_build_args`` and ``_parse_line``.
     """
+
+    _needs_stdin: bool = False
 
     def __init__(
         self,
@@ -155,9 +172,11 @@ class CliAgentService(AgentService):
         log.info("[%s] Launching: %s %s", self._agent_name, self._executable, " ".join(args))
         log.info("[%s] cwd: %s", self._agent_name, working_dir)
 
+        stdin_arg = asyncio.subprocess.PIPE if self._needs_stdin else None
         proc = await asyncio.create_subprocess_exec(
             self._executable,
             *args,
+            stdin=stdin_arg,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=working_dir,
@@ -210,6 +229,14 @@ class CliAgentService(AgentService):
         if proc:
             log.info("[%s] Cancelling process pid=%d", self._agent_name, proc.pid)
             await terminate_process(proc)
+
+    async def respond(self, payload: dict) -> None:
+        proc = self._current_process
+        if proc is None or proc.stdin is None:
+            raise RuntimeError("No active process with stdin")
+        line = json.dumps(payload).encode() + b"\n"
+        proc.stdin.write(line)
+        await proc.stdin.drain()
 
     async def shutdown(self) -> None:
         await self.cancel()

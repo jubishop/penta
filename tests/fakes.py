@@ -23,6 +23,7 @@ class SendCall:
 
 _HANG_SENTINEL = object()
 _EXCEPTION_SENTINEL = object()
+_RESPOND_WAIT_SENTINEL = object()
 
 
 class FakeAgentService(AgentService):
@@ -46,6 +47,9 @@ class FakeAgentService(AgentService):
         # For ordering tests (e.g. cancel-before-shutdown).
         self.order: list[str] = []
         self._cancel_delay: float = 0.0
+        # Bidirectional: respond() support
+        self.respond_calls: list[dict] = []
+        self._respond_event: asyncio.Event | None = None
 
     # -- Enqueue helpers ------------------------------------------------------
 
@@ -86,6 +90,44 @@ class FakeAgentService(AgentService):
         events.append((_EXCEPTION_SENTINEL, exc))
         self._responses.append(events)
 
+    def enqueue_question(
+        self,
+        questions: list[dict],
+        control_request_id: str = "cr_1",
+        then_text: str = "Thanks for answering!",
+    ) -> None:
+        """Enqueue a QUESTION event, wait for respond(), then continue."""
+        self._respond_event = asyncio.Event()
+        self._responses.append([
+            StreamEvent(
+                type=StreamEventType.QUESTION,
+                questions=questions,
+                control_request_id=control_request_id,
+            ),
+            _RESPOND_WAIT_SENTINEL,
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text=then_text),
+            StreamEvent(type=StreamEventType.DONE),
+        ])
+
+    def enqueue_plan_review(
+        self,
+        plan_text: str,
+        control_request_id: str = "cr_plan_1",
+        then_text: str = "Executing plan...",
+    ) -> None:
+        """Enqueue a PLAN_REVIEW event, wait for respond(), then continue."""
+        self._respond_event = asyncio.Event()
+        self._responses.append([
+            StreamEvent(
+                type=StreamEventType.PLAN_REVIEW,
+                plan_text=plan_text,
+                control_request_id=control_request_id,
+            ),
+            _RESPOND_WAIT_SENTINEL,
+            StreamEvent(type=StreamEventType.TEXT_DELTA, text=then_text),
+            StreamEvent(type=StreamEventType.DONE),
+        ])
+
     # -- AgentService implementation ------------------------------------------
 
     async def send(
@@ -116,12 +158,21 @@ class FakeAgentService(AgentService):
             for event in events:
                 if event is _HANG_SENTINEL:
                     await asyncio.Event().wait()
+                elif event is _RESPOND_WAIT_SENTINEL:
+                    if self._respond_event:
+                        await self._respond_event.wait()
+                        self._respond_event = None
                 elif isinstance(event, tuple) and len(event) == 2 and event[0] is _EXCEPTION_SENTINEL:
                     raise event[1]
                 else:
                     yield event
         finally:
             self._streaming = False
+
+    async def respond(self, payload: dict) -> None:
+        self.respond_calls.append(payload)
+        if self._respond_event:
+            self._respond_event.set()
 
     async def cancel(self) -> None:
         if self._cancel_delay:

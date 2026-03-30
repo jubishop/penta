@@ -206,7 +206,7 @@ class TestCancelAgent:
         # Codex should still be processing
         assert codex.status == AgentStatus.PROCESSING
 
-    async def test_cancel_all_streaming(self, multi_agent_state):
+    async def test_cancel_all_busy(self, multi_agent_state):
         app, services = multi_agent_state
 
         await app.add_agent("claude", AgentType.CLAUDE)
@@ -217,7 +217,7 @@ class TestCancelAgent:
         await app.send_user_message("hello everyone")
         await asyncio.sleep(0)
 
-        count = app.cancel_all_streaming()
+        count = app.cancel_all_busy()
         assert count == 2
 
     async def test_cancel_agent_when_idle(self, multi_agent_state):

@@ -20,8 +20,10 @@ class TestClaudeArgBuilding:
         assert "-p" in args
         assert "--verbose" in args
         assert "--output-format" in args
+        assert "--input-format" in args
+        assert "stream-json" in args
         assert "--include-partial-messages" in args
-        assert "--dangerously-skip-permissions" in args
+        assert "--dangerously-skip-permissions" not in args
         assert args[-1] == "hello"
 
     def test_resume_session_args(self):
@@ -403,6 +405,119 @@ class TestClaudeFullTranscript:
         assert types.count(StreamEventType.SESSION_STARTED) == 1
 
 
+class TestControlRequestParsing:
+    """Verify control_request messages are handled correctly."""
+
+    @pytest.mark.asyncio
+    async def test_regular_tool_auto_approved(self):
+        """control_request for a regular tool → auto-approve, yield TOOL_USE_STARTED."""
+        lines = [
+            json.dumps({
+                "type": "control_request",
+                "subtype": "can_use_tool",
+                "id": "cr_1",
+                "tool": {"name": "Bash", "id": "tu_1", "input": {"command": "ls"}},
+            }),
+        ]
+        events = await _run_with_lines(lines)
+
+        tool_events = [e for e in events if e.type == StreamEventType.TOOL_USE_STARTED]
+        assert len(tool_events) == 1
+        assert tool_events[0].tool_name == "Bash"
+
+    @pytest.mark.asyncio
+    async def test_regular_tool_writes_approval_to_stdin(self):
+        """Auto-approval should write control_response to stdin."""
+        service = ClaudeService(executable="/usr/bin/claude")
+
+        stdin = _make_mock_stdin()
+        stdout_data = json.dumps({
+            "type": "control_request",
+            "subtype": "can_use_tool",
+            "id": "cr_42",
+            "tool": {"name": "Read", "id": "tu_2", "input": {"file_path": "/foo"}},
+        }).encode() + b"\n"
+
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdin = stdin
+        proc.stdout = asyncio.StreamReader()
+        proc.stdout.feed_data(stdout_data)
+        proc.stdout.feed_eof()
+        proc.stderr = asyncio.StreamReader()
+        proc.stderr.feed_data(b"")
+        proc.stderr.feed_eof()
+        proc.wait = AsyncMock(return_value=0)
+
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            async for _ in service.send("test", None, Path("/tmp")):
+                pass
+
+        # Verify stdin.write was called with a control_response
+        assert stdin.write.called
+        written = stdin.write.call_args[0][0]
+        response = json.loads(written.decode().strip())
+        assert response["type"] == "control_response"
+        assert response["id"] == "cr_42"
+        assert response["allow"] is True
+
+    @pytest.mark.asyncio
+    async def test_ask_user_question_yields_question_event(self):
+        """control_request for AskUserQuestion → yield QUESTION, no auto-approve."""
+        questions = [
+            {
+                "question": "Which approach?",
+                "header": "Approach",
+                "options": [
+                    {"label": "Option A", "description": "First approach"},
+                    {"label": "Option B", "description": "Second approach"},
+                ],
+                "multiSelect": False,
+            }
+        ]
+        lines = [
+            json.dumps({
+                "type": "control_request",
+                "subtype": "can_use_tool",
+                "id": "cr_q1",
+                "tool": {
+                    "name": "AskUserQuestion",
+                    "id": "tu_q1",
+                    "input": {"questions": questions},
+                },
+            }),
+        ]
+        events = await _run_with_lines(lines)
+
+        q_events = [e for e in events if e.type == StreamEventType.QUESTION]
+        assert len(q_events) == 1
+        assert q_events[0].questions == questions
+        assert q_events[0].control_request_id == "cr_q1"
+        assert q_events[0].tool_name == "AskUserQuestion"
+
+    @pytest.mark.asyncio
+    async def test_exit_plan_mode_yields_plan_review(self):
+        """control_request for ExitPlanMode → yield PLAN_REVIEW."""
+        lines = [
+            json.dumps({
+                "type": "control_request",
+                "subtype": "can_use_tool",
+                "id": "cr_p1",
+                "tool": {
+                    "name": "ExitPlanMode",
+                    "id": "tu_p1",
+                    "input": {"plan": "## Step 1\nDo the thing."},
+                },
+            }),
+        ]
+        events = await _run_with_lines(lines)
+
+        plan_events = [e for e in events if e.type == StreamEventType.PLAN_REVIEW]
+        assert len(plan_events) == 1
+        assert plan_events[0].plan_text == "## Step 1\nDo the thing."
+        assert plan_events[0].control_request_id == "cr_p1"
+
+
 # -- Helpers ------------------------------------------------------------------
 
 class TestConcurrentStreamingGuard:
@@ -427,6 +542,7 @@ class TestConcurrentStreamingGuard:
         service = ClaudeService(executable="/usr/bin/claude")
         proc = MagicMock()
         proc.returncode = 0
+        proc.stdin = _make_mock_stdin()
         proc.stdout = asyncio.StreamReader()
         proc.stdout.feed_data(b'{"type":"result","result":"done"}\n')
         proc.stdout.feed_eof()
@@ -441,6 +557,14 @@ class TestConcurrentStreamingGuard:
         assert service._streaming is False
 
 
+def _make_mock_stdin():
+    """Create a mock stdin that supports write() and drain()."""
+    stdin = MagicMock()
+    stdin.write = MagicMock()
+    stdin.drain = AsyncMock()
+    return stdin
+
+
 async def _run_with_lines(
     lines: list[str],
     returncode: int = 0,
@@ -453,6 +577,7 @@ async def _run_with_lines(
 
     proc = MagicMock()
     proc.returncode = returncode
+    proc.stdin = _make_mock_stdin()
     proc.stdout = asyncio.StreamReader()
     proc.stdout.feed_data(stdout_data)
     proc.stdout.feed_eof()

@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Callable
 from uuid import UUID
 
+import re
+
 from penta.coordinators.agent_coordinator import AgentCoordinator
 from penta.models.agent_config import AgentConfig
 from penta.models.agent_status import AgentStatus
@@ -14,6 +16,7 @@ from penta.models.agent_type import AgentType
 from penta.models.conversation_info import ConversationInfo
 from penta.models.message import Message
 from penta.models.message_sender import MessageSender
+from penta.models.pending_plan import PendingPlan
 from penta.models.tagged_message import TaggedMessage
 from penta.routing import MessageRouter
 from penta.services.agent_service import AgentService
@@ -48,11 +51,16 @@ class AppState:
         self.current_conversation_id: int = 1
         self.current_conversation_title: str = "Default"
 
+        # Pending plans awaiting user approval
+        self.pending_plans: dict[UUID, PendingPlan] = {}
+
         # Callbacks for the TUI layer
         self.on_text_delta: Callable[[UUID, str], None] | None = None
         self.on_stream_complete: Callable[[Message, UUID], None] | None = None
         self.on_status_changed: Callable[[UUID, AgentStatus], None] | None = None
         self.on_conversation_switched: Callable[[], None] | None = None
+        self.on_question_asked: Callable[[UUID, list[dict], str], None] | None = None
+        self.on_plan_review: Callable[[UUID, str, str], None] | None = None
 
     async def connect(self) -> None:
         await self.db.connect()
@@ -98,9 +106,7 @@ class AppState:
         )
 
         # Wire callbacks through to TUI
-        coordinator.on_text_delta = self._relay_text_delta
-        coordinator.on_stream_complete = self._relay_stream_complete
-        coordinator.on_status_changed = self._relay_status_changed
+        self._wire_coordinator_callbacks(coordinator)
 
         self.coordinators[config.id] = coordinator
 
@@ -125,17 +131,19 @@ class AppState:
     def cancel_agent(self, agent_id: UUID) -> bool:
         """Cancel a specific agent's current stream. Returns True if was streaming."""
         coord = self.coordinators.get(agent_id)
-        if coord and coord.config.status == AgentStatus.PROCESSING:
+        if coord and coord.config.status.is_busy:
             coord.cancel()
+            self.pending_plans.pop(agent_id, None)
             return True
         return False
 
-    def cancel_all_streaming(self) -> int:
-        """Cancel all currently streaming agents. Returns count cancelled."""
+    def cancel_all_busy(self) -> int:
+        """Cancel all busy agents (streaming or waiting for user). Returns count cancelled."""
         count = 0
         for coord in self.coordinators.values():
-            if coord.config.status == AgentStatus.PROCESSING:
+            if coord.config.status.is_busy:
                 coord.cancel()
+                self.pending_plans.pop(coord.config.id, None)
                 count += 1
         return count
 
@@ -149,11 +157,78 @@ class AppState:
 
     # -- Delegated to router --
 
-    async def send_user_message(self, text: str) -> None:
-        await self.router.send_user_message(text)
+    _PLAN_TOKEN_RE = re.compile(r"/plan\b", re.IGNORECASE)
+
+    async def send_user_message(
+        self, text: str, resolved_plan_id: UUID | None = None,
+    ) -> None:
+        """Send a user message, interpolating /plan if present.
+
+        If *resolved_plan_id* is provided, that specific plan is used for
+        interpolation.  Otherwise, when there is exactly one pending plan it
+        is used automatically.  When multiple plans exist and none is
+        specified, the original text is sent without interpolation (the TUI
+        should show the picker first and call again with *resolved_plan_id*).
+        """
+        routed_text: str | None = None
+        if self._PLAN_TOKEN_RE.search(text):
+            plan = self._resolve_plan_for_interpolation(resolved_plan_id)
+            if plan:
+                routed_text = self._PLAN_TOKEN_RE.sub(
+                    f"\n\n{plan.plan_text}\n\n", text,
+                )
+        await self.router.send_user_message(text, routed_text=routed_text)
+
+    def _resolve_plan_for_interpolation(
+        self, explicit_id: UUID | None = None,
+    ) -> PendingPlan | None:
+        if explicit_id is not None:
+            return self.pending_plans.get(explicit_id)
+        if len(self.pending_plans) == 1:
+            return next(iter(self.pending_plans.values()))
+        return None
 
     def receive_external_message(self, sender_name: str, text: str) -> None:
         self.router.receive_external_message(sender_name, text)
+
+    # -- Plan / question responses --
+
+    async def respond_to_question(
+        self,
+        agent_id: UUID,
+        control_request_id: str,
+        questions: list[dict],
+        answers: dict[str, str],
+    ) -> None:
+        coord = self.coordinators.get(agent_id)
+        if coord:
+            await coord.respond_to_question(control_request_id, questions, answers)
+
+    async def approve_plan(self, agent_id: UUID) -> None:
+        plan = self.pending_plans.get(agent_id)
+        if not plan:
+            return
+        coord = self.coordinators.get(agent_id)
+        if coord:
+            try:
+                await coord.approve_plan(plan.control_request_id)
+            except Exception:
+                log.exception("[%s] Failed to approve plan", plan.agent_name)
+                return
+        self.pending_plans.pop(agent_id, None)
+
+    async def reject_plan(self, agent_id: UUID, feedback: str) -> None:
+        plan = self.pending_plans.get(agent_id)
+        if not plan:
+            return
+        coord = self.coordinators.get(agent_id)
+        if coord:
+            try:
+                await coord.reject_plan(plan.control_request_id, feedback)
+            except Exception:
+                log.exception("[%s] Failed to reject plan", plan.agent_name)
+                return
+        self.pending_plans.pop(agent_id, None)
 
     # -- Conversation management --
 
@@ -288,9 +363,7 @@ class AppState:
                 service=service,
             )
 
-            coordinator.on_text_delta = self._relay_text_delta
-            coordinator.on_stream_complete = self._relay_stream_complete
-            coordinator.on_status_changed = self._relay_status_changed
+            self._wire_coordinator_callbacks(coordinator)
 
             self.coordinators[config.id] = coordinator
 
@@ -356,14 +429,43 @@ class AppState:
 
     # -- Callback relays --
 
+    def _wire_coordinator_callbacks(self, coord: AgentCoordinator) -> None:
+        coord.on_text_delta = self._relay_text_delta
+        coord.on_stream_complete = self._relay_stream_complete
+        coord.on_status_changed = self._relay_status_changed
+        coord.on_question_asked = self._relay_question_asked
+        coord.on_plan_review = self._relay_plan_review
+
     def _relay_text_delta(self, agent_id: UUID, delta: str) -> None:
         if self.on_text_delta:
             self.on_text_delta(agent_id, delta)
 
     def _relay_stream_complete(self, message: Message, agent_id: UUID) -> None:
+        # Clean up pending plan if the stream ended (cancelled, errored, etc.)
+        self.pending_plans.pop(agent_id, None)
         if self.on_stream_complete:
             self.on_stream_complete(message, agent_id)
 
     def _relay_status_changed(self, agent_id: UUID, status: AgentStatus) -> None:
         if self.on_status_changed:
             self.on_status_changed(agent_id, status)
+
+    def _relay_question_asked(
+        self, agent_id: UUID, questions: list[dict], control_request_id: str,
+    ) -> None:
+        if self.on_question_asked:
+            self.on_question_asked(agent_id, questions, control_request_id)
+
+    def _relay_plan_review(
+        self, agent_id: UUID, plan_text: str, control_request_id: str,
+    ) -> None:
+        agent = self.agent_by_id(agent_id)
+        agent_name = agent.name if agent else "Agent"
+        self.pending_plans[agent_id] = PendingPlan(
+            agent_id=agent_id,
+            agent_name=agent_name,
+            control_request_id=control_request_id,
+            plan_text=plan_text,
+        )
+        if self.on_plan_review:
+            self.on_plan_review(agent_id, plan_text, control_request_id)

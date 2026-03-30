@@ -50,6 +50,8 @@ class AgentCoordinator:
         self.on_text_delta: Callable[[UUID, str], None] | None = None
         self.on_stream_complete: Callable[[Message, UUID], None] | None = None
         self.on_status_changed: Callable[[UUID, AgentStatus], None] | None = None
+        self.on_question_asked: Callable[[UUID, list[dict], str], None] | None = None
+        self.on_plan_review: Callable[[UUID, str, str], None] | None = None
 
     def set_other_agent_names(self, names: list[str]) -> None:
         self._other_names = names
@@ -110,6 +112,44 @@ class AgentCoordinator:
         if self._cancel_task:
             await self._cancel_task
         await self.service.shutdown()
+
+    # -- Interactive responses --
+
+    async def respond_to_question(
+        self,
+        control_request_id: str,
+        questions: list[dict],
+        answers: dict[str, str],
+    ) -> None:
+        """Send the user's answers back to Claude for an AskUserQuestion."""
+        self.set_status(AgentStatus.PROCESSING)
+        await self.service.respond({
+            "type": "control_response",
+            "id": control_request_id,
+            "allow": True,
+            "updated_input": {"questions": questions, "answers": answers},
+        })
+
+    async def approve_plan(self, control_request_id: str) -> None:
+        """Approve a plan and let Claude continue executing."""
+        self.set_status(AgentStatus.PROCESSING)
+        await self.service.respond({
+            "type": "control_response",
+            "id": control_request_id,
+            "allow": True,
+        })
+
+    async def reject_plan(
+        self, control_request_id: str, feedback: str,
+    ) -> None:
+        """Reject a plan with feedback — Claude stays in plan mode."""
+        self.set_status(AgentStatus.PROCESSING)
+        await self.service.respond({
+            "type": "control_response",
+            "id": control_request_id,
+            "allow": False,
+            "message": feedback,
+        })
 
     # -- Prompt construction --
 
@@ -210,6 +250,34 @@ class AgentCoordinator:
                         else:
                             response.text = event.error or "Unknown error"
                         response.is_error = True
+
+                    case StreamEventType.QUESTION:
+                        log.info(
+                            "[%s] Question asked (%d questions)",
+                            self.config.name,
+                            len(event.questions or []),
+                        )
+                        self.set_status(AgentStatus.WAITING_FOR_USER)
+                        if self.on_question_asked:
+                            self.on_question_asked(
+                                self.config.id,
+                                event.questions or [],
+                                event.control_request_id or "",
+                            )
+
+                    case StreamEventType.PLAN_REVIEW:
+                        log.info(
+                            "[%s] Plan review: %s",
+                            self.config.name,
+                            (event.plan_text or "")[:100],
+                        )
+                        self.set_status(AgentStatus.WAITING_FOR_USER)
+                        if self.on_plan_review:
+                            self.on_plan_review(
+                                self.config.id,
+                                event.plan_text or "",
+                                event.control_request_id or "",
+                            )
 
                     case StreamEventType.USAGE:
                         log.info(
