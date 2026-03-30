@@ -802,10 +802,11 @@ class TestQuestionEvent:
         assert len(fake.respond_calls) == 1
         payload = fake.respond_calls[0]
         assert payload["type"] == "control_response"
-        assert payload["id"] == "cr_5"
-        assert payload["allow"] is True
-        assert payload["updated_input"]["questions"] == [{"question": "Q?"}]
-        assert payload["updated_input"]["answers"] == {"Q?": "answer"}
+        resp = payload["response"]
+        assert resp["request_id"] == "cr_5"
+        assert resp["response"]["behavior"] == "allow"
+        assert resp["response"]["updatedInput"]["questions"] == [{"question": "Q?"}]
+        assert resp["response"]["updatedInput"]["answers"] == {"Q?": "answer"}
 
 
 class TestPlanReviewEvent:
@@ -869,8 +870,9 @@ class TestPlanReviewEvent:
         assert len(fake.respond_calls) == 1
         payload = fake.respond_calls[0]
         assert payload["type"] == "control_response"
-        assert payload["id"] == "cr_p3"
-        assert payload["allow"] is True
+        resp = payload["response"]
+        assert resp["request_id"] == "cr_p3"
+        assert resp["response"]["behavior"] == "allow"
 
     async def test_reject_plan_calls_service_respond_with_deny(
         self, memory_db: PentaDB,
@@ -888,9 +890,10 @@ class TestPlanReviewEvent:
         assert len(fake.respond_calls) == 1
         payload = fake.respond_calls[0]
         assert payload["type"] == "control_response"
-        assert payload["id"] == "cr_p4"
-        assert payload["allow"] is False
-        assert payload["message"] == "needs more detail"
+        resp = payload["response"]
+        assert resp["request_id"] == "cr_p4"
+        assert resp["response"]["behavior"] == "deny"
+        assert resp["response"]["message"] == "needs more detail"
 
 
 class TestCancelDuringWaitingForUser:

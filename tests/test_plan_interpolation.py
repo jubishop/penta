@@ -178,9 +178,10 @@ class TestPlanApproveReject:
         await state.approve_plan(claude.id)
         assert claude.id not in state.pending_plans
 
-        # Verify service.respond was called
+        # Verify service.respond was called with SDK wire format
         assert len(claude_svc.respond_calls) == 1
-        assert claude_svc.respond_calls[0]["allow"] is True
+        resp = claude_svc.respond_calls[0]["response"]
+        assert resp["response"]["behavior"] == "allow"
 
     async def test_reject_removes_from_pending(self, state_with_agents):
         state, services = state_with_agents
@@ -200,8 +201,9 @@ class TestPlanApproveReject:
         assert claude.id not in state.pending_plans
 
         assert len(claude_svc.respond_calls) == 1
-        assert claude_svc.respond_calls[0]["allow"] is False
-        assert claude_svc.respond_calls[0]["message"] == "needs work"
+        resp = claude_svc.respond_calls[0]["response"]
+        assert resp["response"]["behavior"] == "deny"
+        assert resp["response"]["message"] == "needs work"
 
     async def test_approve_nonexistent_plan_is_noop(self, state_with_agents):
         state, services = state_with_agents

@@ -125,9 +125,14 @@ class AgentCoordinator:
         self.set_status(AgentStatus.PROCESSING)
         await self.service.respond({
             "type": "control_response",
-            "id": control_request_id,
-            "allow": True,
-            "updated_input": {"questions": questions, "answers": answers},
+            "response": {
+                "subtype": "success",
+                "request_id": control_request_id,
+                "response": {
+                    "behavior": "allow",
+                    "updatedInput": {"questions": questions, "answers": answers},
+                },
+            },
         })
 
     async def approve_plan(self, control_request_id: str) -> None:
@@ -135,8 +140,11 @@ class AgentCoordinator:
         self.set_status(AgentStatus.PROCESSING)
         await self.service.respond({
             "type": "control_response",
-            "id": control_request_id,
-            "allow": True,
+            "response": {
+                "subtype": "success",
+                "request_id": control_request_id,
+                "response": {"behavior": "allow"},
+            },
         })
 
     async def reject_plan(
@@ -146,9 +154,11 @@ class AgentCoordinator:
         self.set_status(AgentStatus.PROCESSING)
         await self.service.respond({
             "type": "control_response",
-            "id": control_request_id,
-            "allow": False,
-            "message": feedback,
+            "response": {
+                "subtype": "success",
+                "request_id": control_request_id,
+                "response": {"behavior": "deny", "message": feedback},
+            },
         })
 
     # -- Prompt construction --

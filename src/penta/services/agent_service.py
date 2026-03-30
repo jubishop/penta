@@ -139,6 +139,15 @@ class CliAgentService(AgentService):
         """Prepend system prompt for CLIs without a dedicated system-prompt flag."""
         return f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
 
+    async def _on_process_started(
+        self, proc: asyncio.subprocess.Process, prompt: str,
+    ) -> None:
+        """Hook called after subprocess creation, before reading stdout.
+
+        Subclasses can override to send initial data to stdin (e.g. handshake,
+        prompt delivery for bidirectional protocols).
+        """
+
     # -- Shared lifecycle ----------------------------------------------------
 
     async def send(
@@ -183,6 +192,7 @@ class CliAgentService(AgentService):
             env=env,
         )
         self._current_process = proc
+        await self._on_process_started(proc, prompt)
 
         stderr_task = asyncio.create_task(proc.stderr.read())
 

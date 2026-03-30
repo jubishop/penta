@@ -23,22 +23,27 @@ class TestClaudeArgBuilding:
         assert "--input-format" in args
         assert "stream-json" in args
         assert "--include-partial-messages" in args
+        assert "--permission-prompt-tool" in args
+        assert args[args.index("--permission-prompt-tool") + 1] == "stdio"
         assert "--dangerously-skip-permissions" not in args
-        assert args[-1] == "hello"
+        # Prompt is NOT in args — delivered via stdin
+        assert "hello" not in args
 
     def test_resume_session_args(self):
         service = ClaudeService(executable="/usr/bin/claude")
         args = service._build_args("follow up", session_id="sess-123", system_prompt=None)
         assert "--resume" in args
         assert args[args.index("--resume") + 1] == "sess-123"
+        # Prompt not in args
+        assert "follow up" not in args
 
     def test_system_prompt_uses_append_flag(self):
         service = ClaudeService(executable="/usr/bin/claude")
         args = service._build_args("hello", session_id=None, system_prompt="You are X.")
         assert "--append-system-prompt" in args
         assert args[args.index("--append-system-prompt") + 1] == "You are X."
-        # System prompt should NOT be prepended to the user prompt
-        assert args[-1] == "hello"
+        # Prompt not in args
+        assert "hello" not in args
 
     def test_model_flag(self):
         service = ClaudeService(executable="/usr/bin/claude", model="opus")
@@ -305,6 +310,37 @@ class TestClaudeEventParsing:
         assert service._has_emitted_text is False
 
 
+class TestStdinPromptDelivery:
+    """Verify prompt is sent via stdin, not CLI args."""
+
+    @pytest.mark.asyncio
+    async def test_on_process_started_sends_init_and_prompt(self):
+        service = ClaudeService(executable="/usr/bin/claude")
+        stdin = _make_mock_stdin()
+
+        proc = MagicMock()
+        proc.stdin = stdin
+
+        await service._on_process_started(proc, "hello world")
+
+        # Should have written exactly 2 lines (init handshake + user message)
+        assert stdin.write.call_count == 2
+        assert stdin.drain.call_count == 1
+
+        # First write: initialize control request
+        init_line = stdin.write.call_args_list[0][0][0]
+        init_data = json.loads(init_line.decode().strip())
+        assert init_data["type"] == "control_request"
+        assert init_data["request"]["subtype"] == "initialize"
+
+        # Second write: user message with prompt
+        msg_line = stdin.write.call_args_list[1][0][0]
+        msg_data = json.loads(msg_line.decode().strip())
+        assert msg_data["type"] == "user"
+        assert msg_data["message"]["role"] == "user"
+        assert msg_data["message"]["content"] == "hello world"
+
+
 class TestClaudeCancel:
     @pytest.mark.asyncio
     async def test_cancel_terminates_process(self):
@@ -427,7 +463,7 @@ class TestControlRequestParsing:
 
     @pytest.mark.asyncio
     async def test_regular_tool_writes_approval_to_stdin(self):
-        """Auto-approval should write control_response to stdin."""
+        """Auto-approval should write control_response to stdin in SDK format."""
         service = ClaudeService(executable="/usr/bin/claude")
 
         stdin = _make_mock_stdin()
@@ -453,13 +489,15 @@ class TestControlRequestParsing:
             async for _ in service.send("test", None, Path("/tmp")):
                 pass
 
-        # Verify stdin.write was called with a control_response
-        assert stdin.write.called
-        written = stdin.write.call_args[0][0]
-        response = json.loads(written.decode().strip())
-        assert response["type"] == "control_response"
-        assert response["id"] == "cr_42"
-        assert response["allow"] is True
+        # Find the control_response write (after init handshake + prompt)
+        writes = [
+            json.loads(call[0][0].decode().strip())
+            for call in stdin.write.call_args_list
+        ]
+        approval = [w for w in writes if w.get("type") == "control_response"
+                     and "response" in w and w["response"].get("request_id") == "cr_42"]
+        assert len(approval) == 1
+        assert approval[0]["response"]["response"]["behavior"] == "allow"
 
     @pytest.mark.asyncio
     async def test_ask_user_question_yields_question_event(self):

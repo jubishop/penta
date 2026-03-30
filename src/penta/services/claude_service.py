@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import uuid
 from typing import AsyncIterator
 
 from penta.services.agent_service import CliAgentService, StreamEvent, StreamEventType
@@ -38,9 +40,12 @@ class ClaudeService(CliAgentService):
         session_id: str | None,
         system_prompt: str | None,
     ) -> list[str]:
+        # Prompt is delivered via stdin, not as a CLI arg, because
+        # --input-format stream-json ignores CLI arg prompts.
         args = ["-p", "--verbose", "--output-format", "stream-json",
                 "--input-format", "stream-json",
-                "--include-partial-messages"]
+                "--include-partial-messages",
+                "--permission-prompt-tool", "stdio"]
 
         if self._model:
             args += ["--model", self._model]
@@ -51,8 +56,30 @@ class ClaudeService(CliAgentService):
         if session_id:
             args += ["--resume", session_id]
 
-        args.append(prompt)
         return args
+
+    async def _on_process_started(
+        self, proc: asyncio.subprocess.Process, prompt: str,
+    ) -> None:
+        """Send the initialize handshake and prompt via stdin."""
+        if not proc.stdin:
+            return
+
+        # 1. Initialize control handshake (as the Agent SDK does)
+        init_req = json.dumps({
+            "type": "control_request",
+            "request_id": f"req_init_{uuid.uuid4().hex[:8]}",
+            "request": {"subtype": "initialize", "hooks": None},
+        })
+        proc.stdin.write(init_req.encode() + b"\n")
+
+        # 2. Send the user prompt
+        user_msg = json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": prompt},
+        })
+        proc.stdin.write(user_msg.encode() + b"\n")
+        await proc.stdin.drain()
 
     async def _auto_approve(self, request_id: str) -> None:
         """Auto-approve a control_request by writing to stdin."""
@@ -60,8 +87,11 @@ class ClaudeService(CliAgentService):
         if proc and proc.stdin:
             response = {
                 "type": "control_response",
-                "id": request_id,
-                "allow": True,
+                "response": {
+                    "subtype": "success",
+                    "request_id": request_id,
+                    "response": {"behavior": "allow"},
+                },
             }
             line = json.dumps(response).encode() + b"\n"
             proc.stdin.write(line)
@@ -94,12 +124,15 @@ class ClaudeService(CliAgentService):
                 )
 
         elif msg_type == "control_request":
-            subtype = data.get("subtype")
+            # SDK format: {request_id, request: {subtype, tool_name, input}}
+            # Possible flat format: {id, subtype, tool: {name, input}}
+            req = data.get("request", {})
+            subtype = req.get("subtype") or data.get("subtype")
             if subtype == "can_use_tool":
-                tool = data.get("tool", {})
-                tool_name = tool.get("name", "")
-                request_id = data.get("id", "")
-                tool_input = tool.get("input", {})
+                tool_name = req.get("tool_name") or data.get("tool", {}).get("name", "")
+                request_id = data.get("request_id") or data.get("id", "")
+                tool_input = req.get("input") or data.get("tool", {}).get("input", {})
+                tool_id = req.get("tool_use_id") or data.get("tool", {}).get("id", "")
 
                 if tool_name == "AskUserQuestion":
                     questions = tool_input.get("questions", [])
@@ -123,7 +156,7 @@ class ClaudeService(CliAgentService):
                     yield StreamEvent(
                         type=StreamEventType.TOOL_USE_STARTED,
                         tool_name=tool_name,
-                        tool_id=tool.get("id", ""),
+                        tool_id=tool_id,
                     )
 
         elif msg_type == "stream_event":
