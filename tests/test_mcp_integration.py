@@ -16,7 +16,7 @@ import pytest
 from penta.app_state import AppState
 from penta.models import AgentType, Message
 from penta.services.db import PentaDB
-from penta_mcp.server import send_to_group_chat
+from penta_mcp.server import get_group_chat, list_conversations, send_to_group_chat
 
 
 @pytest.fixture
@@ -26,9 +26,15 @@ def project_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-async def app_state(project_dir: Path) -> AppState:
+def _use_tmp_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route MCP server DB lookups to tmp_path so tests don't touch ~/.local/share."""
+    monkeypatch.setenv("PENTA_DATA_DIR", str(tmp_path))
+
+
+@pytest.fixture
+async def app_state(project_dir: Path, tmp_path: Path, _use_tmp_storage) -> AppState:
     """An AppState backed by the same project directory as the MCP server."""
-    state = AppState(project_dir)
+    state = AppState(project_dir, storage_root=tmp_path)
     await state.connect()
     await state.add_agent("Claude", AgentType.CLAUDE)
     await state.add_agent("Codex", AgentType.CODEX)
@@ -148,3 +154,87 @@ class TestMCPToAppIntegration:
 
         assert "NewAgent" in joined
         assert "NewAgent" in app_state.external_participants
+
+
+class TestMCPConversationTargeting:
+    """MCP tools should respect conversation_id and validate invalid ids."""
+
+    def test_send_to_specific_conversation(self, project_dir: Path, _use_tmp_storage):
+        """Writing to a specific conversation_id targets that conversation."""
+        # Ensure DB is initialized
+        _mcp_write(project_dir, "Alice", "default msg")
+
+        # Create a second conversation via the DB directly
+        import sqlite3
+        from penta.services.db_schema import db_path_for
+
+        path = db_path_for(project_dir)
+        conn = sqlite3.connect(str(path))
+        from penta.utils import utc_iso_now
+
+        now = utc_iso_now()
+        conn.execute(
+            "INSERT INTO conversations (title, created_at, updated_at) VALUES (?, ?, ?)",
+            ("Second", now, now),
+        )
+        conn.commit()
+        cid2 = conn.execute("SELECT MAX(id) FROM conversations").fetchone()[0]
+        conn.close()
+
+        # Write to the second conversation explicitly
+        send_to_group_chat(str(project_dir), "targeted msg", "Bob", conversation_id=cid2)
+
+        # Read from each conversation
+        default_chat = get_group_chat(str(project_dir), conversation_id=1)
+        second_chat = get_group_chat(str(project_dir), conversation_id=cid2)
+
+        assert "default msg" in default_chat
+        assert "targeted msg" not in default_chat
+        assert "targeted msg" in second_chat
+
+    def test_send_to_invalid_conversation_returns_error(self, project_dir: Path, _use_tmp_storage):
+        # Ensure DB exists
+        _mcp_write(project_dir, "Alice", "setup")
+
+        result = send_to_group_chat(str(project_dir), "bad", "Bob", conversation_id=9999)
+        assert "does not exist" in result
+
+    def test_get_from_invalid_conversation_returns_error(self, project_dir: Path, _use_tmp_storage):
+        _mcp_write(project_dir, "Alice", "setup")
+
+        result = get_group_chat(str(project_dir), conversation_id=9999)
+        assert "does not exist" in result
+
+    def test_list_conversations_shows_all(self, project_dir: Path, _use_tmp_storage):
+        _mcp_write(project_dir, "Alice", "setup")
+
+        result = list_conversations(str(project_dir))
+        assert "Default" in result
+
+    def test_default_targets_most_recently_updated(self, project_dir: Path, _use_tmp_storage):
+        """Without explicit conversation_id, MCP targets the most recently updated chat."""
+        import sqlite3
+        from penta.services.db_schema import db_path_for
+        from penta.utils import utc_iso_now
+
+        # Initialize DB and write to default conversation
+        _mcp_write(project_dir, "Alice", "in default")
+
+        # Create a second conversation
+        path = db_path_for(project_dir)
+        conn = sqlite3.connect(str(path))
+        now = utc_iso_now()
+        conn.execute(
+            "INSERT INTO conversations (title, created_at, updated_at) VALUES (?, ?, ?)",
+            ("Second", now, now),
+        )
+        conn.commit()
+        cid2 = conn.execute("SELECT MAX(id) FROM conversations").fetchone()[0]
+        conn.close()
+
+        # Write to second conversation to make it most recently updated
+        send_to_group_chat(str(project_dir), "in second", "Bob", conversation_id=cid2)
+
+        # Default (no conversation_id) should now read from second conversation
+        result = get_group_chat(str(project_dir))
+        assert "in second" in result

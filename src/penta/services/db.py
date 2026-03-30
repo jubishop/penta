@@ -7,7 +7,14 @@ from typing import Callable
 
 import aiosqlite
 
-from penta.services.db_schema import CREATE_TABLES_SQL, db_path_for, default_storage_root
+from penta.services.db_schema import (
+    CREATE_TABLES_SQL,
+    SCHEMA_VERSION,
+    db_path_for,
+    default_storage_root,
+    ensure_default_conversation,
+    run_migrations,
+)
 from penta.utils import utc_iso_now
 
 log = logging.getLogger(__name__)
@@ -31,16 +38,22 @@ class PentaDB:
             self._storage_root = storage_root or default_storage_root()
             self._db_path = db_path_for(self._directory, self._storage_root)
         self._conn: aiosqlite.Connection | None = None
+        self._conversation_id: int = 1
         self._last_data_version: int = 0
         self._last_seen_id: int = 0
         self._local_ids: set[int] = set()
         self._on_external_message: Callable[[str, str], None] | None = None
+        self._polling_paused: bool = False
 
     @property
     def _db(self) -> aiosqlite.Connection:
         if self._conn is None:
             raise RuntimeError("database not connected — call connect() first")
         return self._conn
+
+    @property
+    def conversation_id(self) -> int:
+        return self._conversation_id
 
     async def connect(self) -> None:
         if self._conn is not None:
@@ -52,7 +65,40 @@ class PentaDB:
             self._conn = await aiosqlite.connect(self._db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=5000")
-        await self._db.executescript(CREATE_TABLES_SQL)
+        await self._db.execute("PRAGMA foreign_keys=ON")
+
+        cur = await self._db.execute("PRAGMA user_version")
+        version = (await cur.fetchone())[0]
+
+        if version == 0:
+            # Check if this is a pre-migration DB (has old messages table)
+            cur = await self._db.execute(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type='table' AND name='messages'"
+            )
+            is_existing_db = (await cur.fetchone())[0] > 0
+
+            if is_existing_db:
+                # Pre-migration DB — run migrations to upgrade schema
+                await run_migrations(self._db)
+            else:
+                # Fresh DB — create current schema directly
+                await self._db.executescript(CREATE_TABLES_SQL)
+                await ensure_default_conversation(self._db)
+                await self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                await self._db.commit()
+        else:
+            # Already versioned — run any pending migrations
+            await run_migrations(self._db)
+
+        # Set active conversation to most recently updated
+        cur = await self._db.execute(
+            "SELECT id FROM conversations ORDER BY updated_at DESC LIMIT 1"
+        )
+        row = await cur.fetchone()
+        if row:
+            self._conversation_id = row[0]
+
         self._last_data_version = await self._get_data_version()
         self._last_seen_id = await self._get_max_id()
 
@@ -61,12 +107,77 @@ class PentaDB:
             await self._conn.close()
             self._conn = None
 
+    # -- Conversations --
+
+    async def create_conversation(self, title: str) -> int:
+        now = utc_iso_now()
+        cur = await self._db.execute(
+            "INSERT INTO conversations (title, created_at, updated_at) VALUES (?, ?, ?)",
+            (title, now, now),
+        )
+        await self._db.commit()
+        return cur.lastrowid
+
+    async def list_conversations(self) -> list[tuple[int, str, str, str]]:
+        """Returns (id, title, created_at, updated_at) tuples, most recently updated first."""
+        cur = await self._db.execute(
+            "SELECT id, title, created_at, updated_at FROM conversations "
+            "ORDER BY updated_at DESC"
+        )
+        return await cur.fetchall()
+
+    async def _conversation_exists(self, conversation_id: int) -> bool:
+        cur = await self._db.execute(
+            "SELECT COUNT(*) FROM conversations WHERE id = ?", (conversation_id,)
+        )
+        return (await cur.fetchone())[0] > 0
+
+    async def delete_conversation(self, conversation_id: int) -> None:
+        if not await self._conversation_exists(conversation_id):
+            raise ValueError(f"Conversation {conversation_id} does not exist")
+        await self._db.execute(
+            "DELETE FROM messages WHERE conversation_id = ?", (conversation_id,)
+        )
+        await self._db.execute(
+            "DELETE FROM sessions WHERE conversation_id = ?", (conversation_id,)
+        )
+        await self._db.execute(
+            "DELETE FROM conversations WHERE id = ?", (conversation_id,)
+        )
+        await self._db.commit()
+
+    async def rename_conversation(self, conversation_id: int, title: str) -> None:
+        if not await self._conversation_exists(conversation_id):
+            raise ValueError(f"Conversation {conversation_id} does not exist")
+        await self._db.execute(
+            "UPDATE conversations SET title = ? WHERE id = ?",
+            (title, conversation_id),
+        )
+        await self._db.commit()
+
+    async def set_conversation(self, conversation_id: int) -> None:
+        """Switch the active conversation. Resets external-change tracking state."""
+        cur = await self._db.execute(
+            "SELECT COUNT(*) FROM conversations WHERE id = ?", (conversation_id,)
+        )
+        if (await cur.fetchone())[0] == 0:
+            raise ValueError(f"Conversation {conversation_id} does not exist")
+        self._conversation_id = conversation_id
+        self._local_ids.clear()
+        self._last_seen_id = await self._get_max_id()
+        self._last_data_version = await self._get_data_version()
+
     # -- Messages --
 
     async def append_message(self, sender: str, text: str) -> int:
         cur = await self._db.execute(
-            "INSERT INTO messages (sender, text, timestamp) VALUES (?, ?, ?)",
-            (sender, text, utc_iso_now()),
+            "INSERT INTO messages (conversation_id, sender, text, timestamp) VALUES (?, ?, ?, ?)",
+            (self._conversation_id, sender, text, utc_iso_now()),
+        )
+        now = utc_iso_now()
+        await self._db.execute(
+            "UPDATE conversations SET updated_at = ? WHERE id = ?",
+            (now, self._conversation_id),
         )
         await self._db.commit()
         self._local_ids.add(cur.lastrowid)
@@ -76,8 +187,9 @@ class PentaDB:
         """Returns (id, sender, text, timestamp) tuples, oldest first."""
         cur = await self._db.execute(
             "SELECT id, sender, text, timestamp FROM messages "
+            "WHERE conversation_id = ? "
             "ORDER BY id DESC LIMIT ?",
-            (limit,),
+            (self._conversation_id, limit),
         )
         rows = await cur.fetchall()
         return rows[::-1]
@@ -89,8 +201,9 @@ class PentaDB:
             return []
         self._last_data_version = dv
         cur = await self._db.execute(
-            "SELECT id, sender, text, timestamp FROM messages WHERE id > ? ORDER BY id",
-            (self._last_seen_id,),
+            "SELECT id, sender, text, timestamp FROM messages "
+            "WHERE conversation_id = ? AND id > ? ORDER BY id",
+            (self._conversation_id, self._last_seen_id),
         )
         rows = await cur.fetchall()
         if rows:
@@ -103,9 +216,9 @@ class PentaDB:
     async def compact(self, max_messages: int | None = None) -> None:
         limit = max_messages or self.MAX_MESSAGES
         await self._db.execute(
-            "DELETE FROM messages WHERE id NOT IN "
-            "(SELECT id FROM messages ORDER BY id DESC LIMIT ?)",
-            (limit,),
+            "DELETE FROM messages WHERE conversation_id = ? AND id NOT IN "
+            "(SELECT id FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?)",
+            (self._conversation_id, self._conversation_id, limit),
         )
         await self._db.commit()
 
@@ -113,15 +226,16 @@ class PentaDB:
 
     async def save_session(self, agent_name: str, session_id: str) -> None:
         await self._db.execute(
-            "INSERT OR REPLACE INTO sessions (agent_name, session_id) VALUES (?, ?)",
-            (agent_name, session_id),
+            "INSERT OR REPLACE INTO sessions (agent_name, conversation_id, session_id) "
+            "VALUES (?, ?, ?)",
+            (agent_name, self._conversation_id, session_id),
         )
         await self._db.commit()
 
     async def load_session(self, agent_name: str) -> str | None:
         cur = await self._db.execute(
-            "SELECT session_id FROM sessions WHERE agent_name = ?",
-            (agent_name,),
+            "SELECT session_id FROM sessions WHERE agent_name = ? AND conversation_id = ?",
+            (agent_name, self._conversation_id),
         )
         row = await cur.fetchone()
         return row[0] if row else None
@@ -129,9 +243,17 @@ class PentaDB:
     # -- External change polling --
 
     def set_external_message_callback(
-        self, callback: Callable[[str, str], None]
+        self, callback: Callable[[str, str], None],
     ) -> None:
         self._on_external_message = callback
+
+    def pause_polling(self) -> None:
+        """Pause external change polling. The poll loop skips checks while paused."""
+        self._polling_paused = True
+
+    def resume_polling(self) -> None:
+        """Resume external change polling."""
+        self._polling_paused = False
 
     async def poll_external_messages(self) -> None:
         """Background task: check for external writes every 500ms."""
@@ -140,6 +262,8 @@ class PentaDB:
             if self._conn is None:
                 log.info("poll_external_messages: DB closed, stopping")
                 return
+            if self._polling_paused:
+                continue
             try:
                 rows = await self.check_external_changes()
             except Exception:
@@ -150,7 +274,7 @@ class PentaDB:
                     "poll_external_messages: check failed, will retry"
                 )
                 continue
-            if self._on_external_message:
+            if self._on_external_message and not self._polling_paused:
                 for _, sender, text, _ in rows:
                     try:
                         self._on_external_message(sender, text)
@@ -168,6 +292,9 @@ class PentaDB:
         return row[0]
 
     async def _get_max_id(self) -> int:
-        cur = await self._db.execute("SELECT MAX(id) FROM messages")
+        cur = await self._db.execute(
+            "SELECT MAX(id) FROM messages WHERE conversation_id = ?",
+            (self._conversation_id,),
+        )
         row = await cur.fetchone()
         return row[0] or 0

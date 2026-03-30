@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
+from rich.markup import escape as rich_escape
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer, Static
 
 from penta.models import AgentStatus, AgentType, Message, AgentConfig
 from penta.app_state import AppState
+from penta.utils import log_task_error
 from penta.widgets.chat_message import ChatMessage
 from penta.widgets.chat_room import ChatRoom, NewContentIndicator
+from penta.widgets.conversation_list import ConversationAction, ConversationListResult, ConversationListScreen
 from penta.widgets.input_bar import InputBar
 from penta.widgets.status_indicator import ExternalIndicator, StatusIndicator
 
@@ -47,6 +51,8 @@ class PentaApp(App):
         ("escape", "stop_agents", "Stop agents"),
         ("ctrl+enter", "submit", "Send"),
         ("ctrl+b", "scroll_to_new", "Jump to new"),
+        ("ctrl+n", "new_conversation", "New chat"),
+        ("ctrl+l", "list_conversations", "Chats"),
     ]
 
     def action_quit(self) -> None:
@@ -76,6 +82,7 @@ class PentaApp(App):
         self._messages = _MessageTracker()
         self._status_indicators: dict[UUID, StatusIndicator] = {}
         self._poll_task: asyncio.Task | None = None
+        self._switching: bool = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="header-bar"):
@@ -95,6 +102,7 @@ class PentaApp(App):
         state.on_text_delta = self._on_text_delta
         state.on_stream_complete = self._on_stream_complete
         state.on_status_changed = self._on_status_changed
+        state.on_conversation_switched = self._on_conversation_switched
         state.router.on_external_message = self._on_external_message
         state.router.on_external_participant_joined = self._on_external_participant_joined
 
@@ -128,6 +136,9 @@ class PentaApp(App):
         if trimmed:
             self._messages.rendered_up_to = len(state.conversation)
 
+        # Update title with conversation name
+        self._update_title()
+
     async def on_unmount(self) -> None:
         import traceback
         log.info("on_unmount called — stack:\n%s", "".join(traceback.format_stack()))
@@ -148,10 +159,104 @@ class PentaApp(App):
             chat_room.scroll_to_bottom()
 
     async def on_input_bar_submitted(self, event: InputBar.Submitted) -> None:
-        if not self._state:
+        if not self._state or self._switching:
             return
         await self._state.send_user_message(event.text.strip())
         self._render_new_messages()
+
+    # -- Conversation management --
+
+    def _conversation_task(self, coro) -> None:
+        """Create a tracked async task with error logging."""
+        task = asyncio.create_task(coro)
+        task.add_done_callback(log_task_error)
+
+    async def action_new_conversation(self) -> None:
+        if not self._state or self._switching:
+            return
+        self._switching = True
+        try:
+            title = f"Chat {datetime.now():%Y-%m-%d %H:%M:%S}"
+            info = await self._state.create_conversation(title)
+            await self._state.switch_conversation(info.id)
+        finally:
+            self._switching = False
+
+    async def action_list_conversations(self) -> None:
+        if not self._state or self._switching:
+            return
+        conversations = await self._state.list_conversations()
+        current_id = self._state.current_conversation_id
+
+        def handle_result(result: ConversationListResult | None) -> None:
+            if result is None:
+                return
+            if result.action is ConversationAction.SWITCH:
+                self._conversation_task(self._handle_switch(result.conversation_id))
+            elif result.action is ConversationAction.DELETE:
+                self._conversation_task(self._handle_delete(result.conversation_id))
+            elif result.action is ConversationAction.NEW:
+                self._conversation_task(self.action_new_conversation())
+            elif result.action is ConversationAction.RENAME:
+                self._conversation_task(self._handle_rename(result.conversation_id, result.title))
+
+        self.push_screen(
+            ConversationListScreen(conversations, current_id),
+            callback=handle_result,
+        )
+
+    async def _handle_switch(self, conversation_id: int) -> None:
+        if self._switching:
+            return
+        self._switching = True
+        try:
+            await self._state.switch_conversation(conversation_id)
+        finally:
+            self._switching = False
+
+    async def _handle_delete(self, conversation_id: int) -> None:
+        deleted = await self._state.delete_conversation(conversation_id)
+        if not deleted:
+            self.notify("Cannot delete the active or only conversation", severity="warning")
+
+    async def _handle_rename(self, conversation_id: int, title: str) -> None:
+        await self._state.rename_conversation(conversation_id, title)
+        self._update_title()
+
+    def _on_conversation_switched(self) -> None:
+        """Rebuild the chat room UI after a conversation switch."""
+        chat_room = self.query_one("#chat-room", ChatRoom)
+        chat_room.remove_children()
+        self._messages = _MessageTracker()
+
+        # Clear stale external participant indicators
+        status_bar = self.query_one("#status-bar", Horizontal)
+        for widget in status_bar.query(ExternalIndicator):
+            widget.remove()
+
+        # Re-render loaded history and rebuild external indicators
+        for msg in self._state.conversation:
+            name, agent_type = self._sender_info(msg)
+            widget = chat_room.add_message(msg, name, agent_type)
+            self._messages.register(msg, widget)
+            # Rebuild external participant indicators from history
+            if msg.sender.is_external and msg.sender.name:
+                ext_name = msg.sender.name
+                if ext_name not in self._state.external_participants:
+                    self._state.router.external_participants.add(ext_name)
+                    status_bar.mount(ExternalIndicator(ext_name))
+        self._messages.rendered_up_to = len(self._state.conversation)
+
+        self._update_title()
+
+    def _update_title(self) -> None:
+        if not self._state:
+            return
+        title_widget = self.query_one("#app-title", Static)
+        safe_title = rich_escape(self._state.current_conversation_title)
+        title_widget.update(
+            f"Penta -- {self._directory.name} / {safe_title}"
+        )
 
     # -- Callbacks from AppState --
     # These run on the same asyncio event loop as Textual, so call directly.
