@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import uuid
 from typing import AsyncIterator
 
 from penta.services.agent_service import CliAgentService, StreamEvent, StreamEventType
@@ -12,20 +9,26 @@ log = logging.getLogger(__name__)
 
 
 class ClaudeService(CliAgentService):
-    """Claude CLI agent — thin wrapper over CliAgentService."""
+    """Claude CLI agent — thin wrapper over CliAgentService.
 
-    _needs_stdin: bool = True
+    When a hook_settings JSON string is provided, the service uses
+    PreToolUse HTTP hooks for permission handling (enabling plan review
+    via ExitPlanMode interception).  Otherwise falls back to
+    ``--dangerously-skip-permissions``.
+    """
 
     def __init__(
         self,
         executable: str | None = None,
         model: str | None = None,
+        hook_settings: str | None = None,
     ) -> None:
         super().__init__(
             agent_name="Claude",
             executable=executable,
             model=model,
         )
+        self._hook_settings = hook_settings
         # Per-send parser state
         self._seen_session_id = False
         self._has_emitted_text = False
@@ -40,12 +43,13 @@ class ClaudeService(CliAgentService):
         session_id: str | None,
         system_prompt: str | None,
     ) -> list[str]:
-        # Prompt is delivered via stdin, not as a CLI arg, because
-        # --input-format stream-json ignores CLI arg prompts.
         args = ["-p", "--verbose", "--output-format", "stream-json",
-                "--input-format", "stream-json",
-                "--include-partial-messages",
-                "--permission-prompt-tool", "stdio"]
+                "--include-partial-messages"]
+
+        if self._hook_settings:
+            args += ["--settings", self._hook_settings]
+        else:
+            args.append("--dangerously-skip-permissions")
 
         if self._model:
             args += ["--model", self._model]
@@ -56,46 +60,8 @@ class ClaudeService(CliAgentService):
         if session_id:
             args += ["--resume", session_id]
 
+        args.append(prompt)
         return args
-
-    async def _on_process_started(
-        self, proc: asyncio.subprocess.Process, prompt: str,
-    ) -> None:
-        """Send the initialize handshake and prompt via stdin."""
-        if not proc.stdin:
-            return
-
-        # 1. Initialize control handshake (as the Agent SDK does)
-        init_req = json.dumps({
-            "type": "control_request",
-            "request_id": f"req_init_{uuid.uuid4().hex[:8]}",
-            "request": {"subtype": "initialize", "hooks": None},
-        })
-        proc.stdin.write(init_req.encode() + b"\n")
-
-        # 2. Send the user prompt
-        user_msg = json.dumps({
-            "type": "user",
-            "message": {"role": "user", "content": prompt},
-        })
-        proc.stdin.write(user_msg.encode() + b"\n")
-        await proc.stdin.drain()
-
-    async def _auto_approve(self, request_id: str) -> None:
-        """Auto-approve a control_request by writing to stdin."""
-        proc = self._current_process
-        if proc and proc.stdin:
-            response = {
-                "type": "control_response",
-                "response": {
-                    "subtype": "success",
-                    "request_id": request_id,
-                    "response": {"behavior": "allow"},
-                },
-            }
-            line = json.dumps(response).encode() + b"\n"
-            proc.stdin.write(line)
-            await proc.stdin.drain()
 
     async def _parse_line(self, data: dict) -> AsyncIterator[StreamEvent]:
         msg_type = data.get("type")
@@ -122,42 +88,6 @@ class ClaudeService(CliAgentService):
                     type=StreamEventType.WARNING,
                     error=f"Retrying (attempt {attempt})...",
                 )
-
-        elif msg_type == "control_request":
-            # SDK format: {request_id, request: {subtype, tool_name, input}}
-            # Possible flat format: {id, subtype, tool: {name, input}}
-            req = data.get("request", {})
-            subtype = req.get("subtype") or data.get("subtype")
-            if subtype == "can_use_tool":
-                tool_name = req.get("tool_name") or data.get("tool", {}).get("name", "")
-                request_id = data.get("request_id") or data.get("id", "")
-                tool_input = req.get("input") or data.get("tool", {}).get("input", {})
-                tool_id = req.get("tool_use_id") or data.get("tool", {}).get("id", "")
-
-                if tool_name == "AskUserQuestion":
-                    questions = tool_input.get("questions", [])
-                    yield StreamEvent(
-                        type=StreamEventType.QUESTION,
-                        questions=questions,
-                        control_request_id=request_id,
-                        tool_name=tool_name,
-                    )
-                elif tool_name == "ExitPlanMode":
-                    plan = tool_input.get("plan", "")
-                    yield StreamEvent(
-                        type=StreamEventType.PLAN_REVIEW,
-                        plan_text=plan,
-                        control_request_id=request_id,
-                        tool_name=tool_name,
-                    )
-                else:
-                    # Auto-approve all other tools
-                    await self._auto_approve(request_id)
-                    yield StreamEvent(
-                        type=StreamEventType.TOOL_USE_STARTED,
-                        tool_name=tool_name,
-                        tool_id=tool_id,
-                    )
 
         elif msg_type == "stream_event":
             event = data.get("event", {})

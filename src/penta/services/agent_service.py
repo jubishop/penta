@@ -81,23 +81,11 @@ class AgentService(ABC):
     @abstractmethod
     async def shutdown(self) -> None: ...
 
-    async def respond(self, payload: dict) -> None:
-        """Send a control_response back to the subprocess stdin.
-
-        Only meaningful for services that support bidirectional streaming.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support respond()"
-        )
-
-
 class CliAgentService(AgentService):
     """Shared subprocess lifecycle for CLI-based agents.
 
     Subclasses only need to implement ``_build_args`` and ``_parse_line``.
     """
-
-    _needs_stdin: bool = False
 
     def __init__(
         self,
@@ -139,15 +127,6 @@ class CliAgentService(AgentService):
         """Prepend system prompt for CLIs without a dedicated system-prompt flag."""
         return f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
 
-    async def _on_process_started(
-        self, proc: asyncio.subprocess.Process, prompt: str,
-    ) -> None:
-        """Hook called after subprocess creation, before reading stdout.
-
-        Subclasses can override to send initial data to stdin (e.g. handshake,
-        prompt delivery for bidirectional protocols).
-        """
-
     # -- Shared lifecycle ----------------------------------------------------
 
     async def send(
@@ -181,18 +160,15 @@ class CliAgentService(AgentService):
         log.info("[%s] Launching: %s %s", self._agent_name, self._executable, " ".join(args))
         log.info("[%s] cwd: %s", self._agent_name, working_dir)
 
-        stdin_arg = asyncio.subprocess.PIPE if self._needs_stdin else None
         proc = await asyncio.create_subprocess_exec(
             self._executable,
             *args,
-            stdin=stdin_arg,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=working_dir,
             env=env,
         )
         self._current_process = proc
-        await self._on_process_started(proc, prompt)
 
         stderr_task = asyncio.create_task(proc.stderr.read())
 
@@ -239,14 +215,6 @@ class CliAgentService(AgentService):
         if proc:
             log.info("[%s] Cancelling process pid=%d", self._agent_name, proc.pid)
             await terminate_process(proc)
-
-    async def respond(self, payload: dict) -> None:
-        proc = self._current_process
-        if proc is None or proc.stdin is None:
-            raise RuntimeError("No active process with stdin")
-        line = json.dumps(payload).encode() + b"\n"
-        proc.stdin.write(line)
-        await proc.stdin.drain()
 
     async def shutdown(self) -> None:
         await self.cancel()

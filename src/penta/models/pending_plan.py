@@ -9,6 +9,6 @@ from uuid import UUID
 class PendingPlan:
     agent_id: UUID
     agent_name: str
-    control_request_id: str
+    tool_use_id: str
     plan_text: str
     timestamp: datetime = field(default_factory=datetime.now)

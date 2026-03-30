@@ -41,7 +41,7 @@ class TestPlanInterpolationSinglePlan:
         state.pending_plans[claude.id] = PendingPlan(
             agent_id=claude.id,
             agent_name="Claude",
-            control_request_id="cr_1",
+            tool_use_id="cr_1",
             plan_text="## Step 1\nDo the thing.",
         )
 
@@ -66,7 +66,7 @@ class TestPlanInterpolationSinglePlan:
         state.pending_plans[claude.id] = PendingPlan(
             agent_id=claude.id,
             agent_name="Claude",
-            control_request_id="cr_1",
+            tool_use_id="cr_1",
             plan_text="secret plan details",
         )
 
@@ -106,13 +106,13 @@ class TestPlanInterpolationMultiplePlans:
         state.pending_plans[claude.id] = PendingPlan(
             agent_id=claude.id,
             agent_name="Claude",
-            control_request_id="cr_1",
+            tool_use_id="cr_1",
             plan_text="Claude's plan",
         )
         state.pending_plans[codex.id] = PendingPlan(
             agent_id=codex.id,
             agent_name="Codex",
-            control_request_id="cr_2",
+            tool_use_id="cr_2",
             plan_text="Codex's plan",
         )
 
@@ -134,13 +134,13 @@ class TestPlanInterpolationMultiplePlans:
         state.pending_plans[claude.id] = PendingPlan(
             agent_id=claude.id,
             agent_name="Claude",
-            control_request_id="cr_1",
+            tool_use_id="cr_1",
             plan_text="Claude's plan text",
         )
         state.pending_plans[codex.id] = PendingPlan(
             agent_id=codex.id,
             agent_name="Codex",
-            control_request_id="cr_2",
+            tool_use_id="cr_2",
             plan_text="Codex's plan text",
         )
 
@@ -167,21 +167,13 @@ class TestPlanApproveReject:
         state.pending_plans[claude.id] = PendingPlan(
             agent_id=claude.id,
             agent_name="Claude",
-            control_request_id="cr_p1",
+            tool_use_id="cr_p1",
             plan_text="my plan",
         )
 
-        # The coordinator needs a fake enqueued so respond() doesn't error
-        claude_svc = services["Claude"]
-
         assert claude.id in state.pending_plans
-        await state.approve_plan(claude.id)
+        state.approve_plan(claude.id)
         assert claude.id not in state.pending_plans
-
-        # Verify service.respond was called with SDK wire format
-        assert len(claude_svc.respond_calls) == 1
-        resp = claude_svc.respond_calls[0]["response"]
-        assert resp["response"]["behavior"] == "allow"
 
     async def test_reject_removes_from_pending(self, state_with_agents):
         state, services = state_with_agents
@@ -190,28 +182,20 @@ class TestPlanApproveReject:
         state.pending_plans[claude.id] = PendingPlan(
             agent_id=claude.id,
             agent_name="Claude",
-            control_request_id="cr_p2",
+            tool_use_id="cr_p2",
             plan_text="my plan",
         )
 
-        claude_svc = services["Claude"]
-
         assert claude.id in state.pending_plans
-        await state.reject_plan(claude.id, "needs work")
+        state.reject_plan(claude.id, "needs work")
         assert claude.id not in state.pending_plans
-
-        assert len(claude_svc.respond_calls) == 1
-        resp = claude_svc.respond_calls[0]["response"]
-        assert resp["response"]["behavior"] == "deny"
-        assert resp["response"]["message"] == "needs work"
 
     async def test_approve_nonexistent_plan_is_noop(self, state_with_agents):
         state, services = state_with_agents
         claude = state.agent_by_name("Claude")
 
         # No pending plan — should not error
-        await state.approve_plan(claude.id)
-        assert services["Claude"].respond_calls == []
+        state.approve_plan(claude.id)
 
     async def test_stream_complete_clears_pending_plan(self, state_with_agents):
         state, _ = state_with_agents
@@ -220,7 +204,7 @@ class TestPlanApproveReject:
         state.pending_plans[claude.id] = PendingPlan(
             agent_id=claude.id,
             agent_name="Claude",
-            control_request_id="cr_1",
+            tool_use_id="cr_1",
             plan_text="plan",
         )
 
@@ -237,7 +221,7 @@ class TestPlanApproveReject:
         state.pending_plans[claude.id] = PendingPlan(
             agent_id=claude.id,
             agent_name="Claude",
-            control_request_id="cr_1",
+            tool_use_id="cr_1",
             plan_text="plan",
         )
 
@@ -265,7 +249,7 @@ class TestPlanReviewRelay:
         assert claude.id in state.pending_plans
         plan = state.pending_plans[claude.id]
         assert plan.plan_text == "the plan"
-        assert plan.control_request_id == "cr_99"
+        assert plan.tool_use_id == "cr_99"
         assert plan.agent_name == "Claude"
 
         # Callback was fired

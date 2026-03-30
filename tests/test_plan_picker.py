@@ -23,13 +23,13 @@ def _make_plans() -> dict:
         id1: PendingPlan(
             agent_id=id1,
             agent_name="Claude",
-            control_request_id="cr_1",
+            tool_use_id="cr_1",
             plan_text="Claude's plan",
         ),
         id2: PendingPlan(
             agent_id=id2,
             agent_name="Codex",
-            control_request_id="cr_2",
+            tool_use_id="cr_2",
             plan_text="Codex's plan",
         ),
     }

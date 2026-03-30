@@ -308,7 +308,7 @@ class PentaApp(App):
                     text=f"**Approved plan:**\n\n{plan.plan_text}",
                 )
             )
-        await self._state.approve_plan(agent_id)
+        self._state.approve_plan(agent_id)
         self._render_new_messages()
 
     async def _handle_revise(self, text: str) -> None:
@@ -335,7 +335,7 @@ class PentaApp(App):
             self.notify("Please provide feedback for the revision", severity="warning")
             return
 
-        await self._state.reject_plan(agent_id, feedback)
+        self._state.reject_plan(agent_id, feedback)
         self._render_new_messages()
 
     def _resolve_plan_agent(self, agent_name: str | None) -> UUID | None:
@@ -369,7 +369,13 @@ class PentaApp(App):
     def _on_question_asked(
         self, agent_id: UUID, questions: list[dict], control_request_id: str,
     ) -> None:
-        """Push the question picker modal when Claude asks a question."""
+        """Show the question picker when Claude tries AskUserQuestion.
+
+        The tool is denied via the hook (Claude falls back to text),
+        but we show the structured picker for a better UX.  The user's
+        selections are sent as a formatted chat message that Claude
+        receives as a normal user response.
+        """
         if not self._state:
             return
         agent = self._state.agent_by_id(agent_id)
@@ -377,26 +383,19 @@ class PentaApp(App):
 
         def on_answers(answers: dict[str, str] | None) -> None:
             if answers is None:
-                # User cancelled — cancel the agent
-                if self._state:
-                    self._state.cancel_agent(agent_id)
-                return
-            # Add Q&A summary to chat
-            summary_parts = []
+                return  # User dismissed — Claude already got the denial
+            # Format answers as a user message
+            parts = []
             for q_text, answer in answers.items():
-                summary_parts.append(f"**Q:** {q_text}\n**A:** {answer}")
-            summary = "\n\n".join(summary_parts)
+                parts.append(f"Q: {q_text}\nA: {answer}")
+            answer_text = "Here are my answers:\n\n" + "\n\n".join(parts)
+            # Send as a normal user message so Claude sees it
             if self._state:
-                self._state.conversation.append(
-                    Message(sender=MessageSender.user(), text=summary)
+                task = asyncio.create_task(
+                    self._state.send_user_message(answer_text)
                 )
-            self._render_new_messages()
-            task = asyncio.create_task(
-                self._state.respond_to_question(
-                    agent_id, control_request_id, questions, answers,
-                )
-            )
-            task.add_done_callback(log_task_error)
+                task.add_done_callback(log_task_error)
+                self._render_new_messages()
 
         self.push_screen(
             QuestionPickerScreen(agent_name, questions),

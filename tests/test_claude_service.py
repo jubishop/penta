@@ -20,36 +20,45 @@ class TestClaudeArgBuilding:
         assert "-p" in args
         assert "--verbose" in args
         assert "--output-format" in args
-        assert "--input-format" in args
         assert "stream-json" in args
         assert "--include-partial-messages" in args
-        assert "--permission-prompt-tool" in args
-        assert args[args.index("--permission-prompt-tool") + 1] == "stdio"
-        assert "--dangerously-skip-permissions" not in args
-        # Prompt is NOT in args — delivered via stdin
-        assert "hello" not in args
+        assert "--dangerously-skip-permissions" in args
+        # No stdin-based flags
+        assert "--input-format" not in args
+        assert "--permission-prompt-tool" not in args
+        # Prompt IS the last CLI arg
+        assert args[-1] == "hello"
 
     def test_resume_session_args(self):
         service = ClaudeService(executable="/usr/bin/claude")
         args = service._build_args("follow up", session_id="sess-123", system_prompt=None)
         assert "--resume" in args
         assert args[args.index("--resume") + 1] == "sess-123"
-        # Prompt not in args
-        assert "follow up" not in args
+        # Prompt IS the last CLI arg
+        assert args[-1] == "follow up"
 
     def test_system_prompt_uses_append_flag(self):
         service = ClaudeService(executable="/usr/bin/claude")
         args = service._build_args("hello", session_id=None, system_prompt="You are X.")
         assert "--append-system-prompt" in args
         assert args[args.index("--append-system-prompt") + 1] == "You are X."
-        # Prompt not in args
-        assert "hello" not in args
+        # Prompt IS the last CLI arg
+        assert args[-1] == "hello"
 
     def test_model_flag(self):
         service = ClaudeService(executable="/usr/bin/claude", model="opus")
         args = service._build_args("hello", session_id=None, system_prompt=None)
         assert "--model" in args
         assert args[args.index("--model") + 1] == "opus"
+
+    def test_hook_settings_uses_settings_flag(self):
+        """When hook_settings is provided, use --settings instead of --dangerously-skip-permissions."""
+        service = ClaudeService(executable="/usr/bin/claude", hook_settings='{"hooks":{}}')
+        args = service._build_args("hello", session_id=None, system_prompt=None)
+        assert "--settings" in args
+        assert args[args.index("--settings") + 1] == '{"hooks":{}}'
+        assert "--dangerously-skip-permissions" not in args
+        assert args[-1] == "hello"
 
 
 class TestClaudeEventParsing:
@@ -310,37 +319,6 @@ class TestClaudeEventParsing:
         assert service._has_emitted_text is False
 
 
-class TestStdinPromptDelivery:
-    """Verify prompt is sent via stdin, not CLI args."""
-
-    @pytest.mark.asyncio
-    async def test_on_process_started_sends_init_and_prompt(self):
-        service = ClaudeService(executable="/usr/bin/claude")
-        stdin = _make_mock_stdin()
-
-        proc = MagicMock()
-        proc.stdin = stdin
-
-        await service._on_process_started(proc, "hello world")
-
-        # Should have written exactly 2 lines (init handshake + user message)
-        assert stdin.write.call_count == 2
-        assert stdin.drain.call_count == 1
-
-        # First write: initialize control request
-        init_line = stdin.write.call_args_list[0][0][0]
-        init_data = json.loads(init_line.decode().strip())
-        assert init_data["type"] == "control_request"
-        assert init_data["request"]["subtype"] == "initialize"
-
-        # Second write: user message with prompt
-        msg_line = stdin.write.call_args_list[1][0][0]
-        msg_data = json.loads(msg_line.decode().strip())
-        assert msg_data["type"] == "user"
-        assert msg_data["message"]["role"] == "user"
-        assert msg_data["message"]["content"] == "hello world"
-
-
 class TestClaudeCancel:
     @pytest.mark.asyncio
     async def test_cancel_terminates_process(self):
@@ -441,123 +419,6 @@ class TestClaudeFullTranscript:
         assert types.count(StreamEventType.SESSION_STARTED) == 1
 
 
-class TestControlRequestParsing:
-    """Verify control_request messages are handled correctly."""
-
-    @pytest.mark.asyncio
-    async def test_regular_tool_auto_approved(self):
-        """control_request for a regular tool → auto-approve, yield TOOL_USE_STARTED."""
-        lines = [
-            json.dumps({
-                "type": "control_request",
-                "subtype": "can_use_tool",
-                "id": "cr_1",
-                "tool": {"name": "Bash", "id": "tu_1", "input": {"command": "ls"}},
-            }),
-        ]
-        events = await _run_with_lines(lines)
-
-        tool_events = [e for e in events if e.type == StreamEventType.TOOL_USE_STARTED]
-        assert len(tool_events) == 1
-        assert tool_events[0].tool_name == "Bash"
-
-    @pytest.mark.asyncio
-    async def test_regular_tool_writes_approval_to_stdin(self):
-        """Auto-approval should write control_response to stdin in SDK format."""
-        service = ClaudeService(executable="/usr/bin/claude")
-
-        stdin = _make_mock_stdin()
-        stdout_data = json.dumps({
-            "type": "control_request",
-            "subtype": "can_use_tool",
-            "id": "cr_42",
-            "tool": {"name": "Read", "id": "tu_2", "input": {"file_path": "/foo"}},
-        }).encode() + b"\n"
-
-        proc = MagicMock()
-        proc.returncode = 0
-        proc.stdin = stdin
-        proc.stdout = asyncio.StreamReader()
-        proc.stdout.feed_data(stdout_data)
-        proc.stdout.feed_eof()
-        proc.stderr = asyncio.StreamReader()
-        proc.stderr.feed_data(b"")
-        proc.stderr.feed_eof()
-        proc.wait = AsyncMock(return_value=0)
-
-        with patch("asyncio.create_subprocess_exec", return_value=proc):
-            async for _ in service.send("test", None, Path("/tmp")):
-                pass
-
-        # Find the control_response write (after init handshake + prompt)
-        writes = [
-            json.loads(call[0][0].decode().strip())
-            for call in stdin.write.call_args_list
-        ]
-        approval = [w for w in writes if w.get("type") == "control_response"
-                     and "response" in w and w["response"].get("request_id") == "cr_42"]
-        assert len(approval) == 1
-        assert approval[0]["response"]["response"]["behavior"] == "allow"
-
-    @pytest.mark.asyncio
-    async def test_ask_user_question_yields_question_event(self):
-        """control_request for AskUserQuestion → yield QUESTION, no auto-approve."""
-        questions = [
-            {
-                "question": "Which approach?",
-                "header": "Approach",
-                "options": [
-                    {"label": "Option A", "description": "First approach"},
-                    {"label": "Option B", "description": "Second approach"},
-                ],
-                "multiSelect": False,
-            }
-        ]
-        lines = [
-            json.dumps({
-                "type": "control_request",
-                "subtype": "can_use_tool",
-                "id": "cr_q1",
-                "tool": {
-                    "name": "AskUserQuestion",
-                    "id": "tu_q1",
-                    "input": {"questions": questions},
-                },
-            }),
-        ]
-        events = await _run_with_lines(lines)
-
-        q_events = [e for e in events if e.type == StreamEventType.QUESTION]
-        assert len(q_events) == 1
-        assert q_events[0].questions == questions
-        assert q_events[0].control_request_id == "cr_q1"
-        assert q_events[0].tool_name == "AskUserQuestion"
-
-    @pytest.mark.asyncio
-    async def test_exit_plan_mode_yields_plan_review(self):
-        """control_request for ExitPlanMode → yield PLAN_REVIEW."""
-        lines = [
-            json.dumps({
-                "type": "control_request",
-                "subtype": "can_use_tool",
-                "id": "cr_p1",
-                "tool": {
-                    "name": "ExitPlanMode",
-                    "id": "tu_p1",
-                    "input": {"plan": "## Step 1\nDo the thing."},
-                },
-            }),
-        ]
-        events = await _run_with_lines(lines)
-
-        plan_events = [e for e in events if e.type == StreamEventType.PLAN_REVIEW]
-        assert len(plan_events) == 1
-        assert plan_events[0].plan_text == "## Step 1\nDo the thing."
-        assert plan_events[0].control_request_id == "cr_p1"
-
-
-# -- Helpers ------------------------------------------------------------------
-
 class TestConcurrentStreamingGuard:
     """CliAgentService must reject concurrent send() calls."""
 
@@ -580,7 +441,6 @@ class TestConcurrentStreamingGuard:
         service = ClaudeService(executable="/usr/bin/claude")
         proc = MagicMock()
         proc.returncode = 0
-        proc.stdin = _make_mock_stdin()
         proc.stdout = asyncio.StreamReader()
         proc.stdout.feed_data(b'{"type":"result","result":"done"}\n')
         proc.stdout.feed_eof()
@@ -595,12 +455,7 @@ class TestConcurrentStreamingGuard:
         assert service._streaming is False
 
 
-def _make_mock_stdin():
-    """Create a mock stdin that supports write() and drain()."""
-    stdin = MagicMock()
-    stdin.write = MagicMock()
-    stdin.drain = AsyncMock()
-    return stdin
+# -- Helpers ------------------------------------------------------------------
 
 
 async def _run_with_lines(
@@ -615,7 +470,6 @@ async def _run_with_lines(
 
     proc = MagicMock()
     proc.returncode = returncode
-    proc.stdin = _make_mock_stdin()
     proc.stdout = asyncio.StreamReader()
     proc.stdout.feed_data(stdout_data)
     proc.stdout.feed_eof()

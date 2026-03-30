@@ -20,7 +20,9 @@ from penta.models.pending_plan import PendingPlan
 from penta.models.tagged_message import TaggedMessage
 from penta.routing import MessageRouter
 from penta.services.agent_service import AgentService
+from penta.services.claude_service import ClaudeService
 from penta.services.db import PentaDB
+from penta.services.permission_server import PermissionServer
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ class AppState:
         self.db = db or PentaDB(self.directory, storage_root=storage_root)
         self._service_factory = service_factory
         self._poll_task: asyncio.Task | None = None
+        self._permission_server: PermissionServer | None = None
 
         self.router = MessageRouter(
             self.agents, self._agents_by_id, self.coordinators, self.conversation, self.db,
@@ -73,6 +76,21 @@ class AppState:
                 self.current_conversation_title = title
                 break
 
+        # Start permission server for hook-based plan review
+        if not self._service_factory:  # Skip in tests with fake services
+            self._start_permission_server()
+
+    def _start_permission_server(self) -> None:
+        loop = asyncio.get_running_loop()
+        server = PermissionServer(loop)
+        server.set_plan_review_callback(self._on_hook_plan_review)
+        server.set_question_callback(self._on_hook_question)
+        if server.start():
+            self._permission_server = server
+            log.info("Permission server started on port %d", server.port)
+        else:
+            log.warning("Permission server failed to start — falling back to auto-approve")
+
     # -- Agent management --
 
     async def add_agent(
@@ -95,6 +113,11 @@ class AppState:
                 log.warning("Agent %s: executable not found, marked DISCONNECTED", name)
             service = None
 
+        hook_settings = (
+            self._permission_server.hook_settings_json
+            if self._permission_server and agent_type == AgentType.CLAUDE
+            else None
+        )
         coordinator = AgentCoordinator(
             config=config,
             working_dir=self.directory,
@@ -103,6 +126,7 @@ class AppState:
             other_agent_names=other_names,
             session_id=session_id,
             service=service,
+            hook_settings=hook_settings,
         )
 
         # Wire callbacks through to TUI
@@ -191,44 +215,23 @@ class AppState:
     def receive_external_message(self, sender_name: str, text: str) -> None:
         self.router.receive_external_message(sender_name, text)
 
-    # -- Plan / question responses --
+    # -- Plan responses (via permission server hook) --
 
-    async def respond_to_question(
-        self,
-        agent_id: UUID,
-        control_request_id: str,
-        questions: list[dict],
-        answers: dict[str, str],
-    ) -> None:
-        coord = self.coordinators.get(agent_id)
-        if coord:
-            await coord.respond_to_question(control_request_id, questions, answers)
-
-    async def approve_plan(self, agent_id: UUID) -> None:
-        plan = self.pending_plans.get(agent_id)
+    def approve_plan(self, agent_id: UUID) -> None:
+        plan = self.pending_plans.pop(agent_id, None)
         if not plan:
             return
-        coord = self.coordinators.get(agent_id)
-        if coord:
-            try:
-                await coord.approve_plan(plan.control_request_id)
-            except Exception:
-                log.exception("[%s] Failed to approve plan", plan.agent_name)
-                return
-        self.pending_plans.pop(agent_id, None)
+        if self._permission_server:
+            self._permission_server.resolve_plan_review(plan.tool_use_id, True)
+            log.info("[%s] Plan approved", plan.agent_name)
 
-    async def reject_plan(self, agent_id: UUID, feedback: str) -> None:
-        plan = self.pending_plans.get(agent_id)
+    def reject_plan(self, agent_id: UUID, feedback: str) -> None:
+        plan = self.pending_plans.pop(agent_id, None)
         if not plan:
             return
-        coord = self.coordinators.get(agent_id)
-        if coord:
-            try:
-                await coord.reject_plan(plan.control_request_id, feedback)
-            except Exception:
-                log.exception("[%s] Failed to reject plan", plan.agent_name)
-                return
-        self.pending_plans.pop(agent_id, None)
+        if self._permission_server:
+            self._permission_server.resolve_plan_review(plan.tool_use_id, False)
+            log.info("[%s] Plan rejected: %s", plan.agent_name, feedback)
 
     # -- Conversation management --
 
@@ -353,6 +356,11 @@ class AppState:
                     config.status = AgentStatus.IDLE
                 service = None
 
+            hook_settings = (
+                self._permission_server.hook_settings_json
+                if self._permission_server and config.type == AgentType.CLAUDE
+                else None
+            )
             coordinator = AgentCoordinator(
                 config=config,
                 working_dir=self.directory,
@@ -361,6 +369,7 @@ class AppState:
                 other_agent_names=other_names_map[config.id],
                 session_id=session_id,
                 service=service,
+                hook_settings=hook_settings,
             )
 
             self._wire_coordinator_callbacks(coordinator)
@@ -423,6 +432,8 @@ class AppState:
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+        if self._permission_server:
+            self._permission_server.stop()
         for coord in self.coordinators.values():
             await coord.shutdown()
         await self.db.close()
@@ -464,8 +475,54 @@ class AppState:
         self.pending_plans[agent_id] = PendingPlan(
             agent_id=agent_id,
             agent_name=agent_name,
-            control_request_id=control_request_id,
+            tool_use_id=control_request_id,
             plan_text=plan_text,
         )
         if self.on_plan_review:
             self.on_plan_review(agent_id, plan_text, control_request_id)
+
+    def _on_hook_question(
+        self, tool_use_id: str, questions: list[dict],
+    ) -> None:
+        """Called by the permission server when AskUserQuestion hook fires.
+
+        Surfaces the structured questions to the TUI. The tool is denied,
+        so Claude will fall back to asking as plain text. The TUI shows
+        the QuestionPickerScreen; the user's answers are sent as a regular
+        chat message that Claude receives naturally.
+        """
+        agent = next(
+            (a for a in self.agents if a.type == AgentType.CLAUDE), None,
+        )
+        if not agent:
+            return
+        log.info("[%s] Question intercepted (%d questions)", agent.name, len(questions))
+        if self.on_question_asked:
+            self.on_question_asked(agent.id, questions, tool_use_id)
+
+    def _on_hook_plan_review(
+        self, tool_use_id: str, plan_text: str, full_input: dict,
+    ) -> None:
+        """Called by the permission server when ExitPlanMode hook fires.
+
+        Identifies the Claude agent (only Claude uses hooks) and stores
+        the pending plan.  Runs on the asyncio event loop thread.
+        """
+        # Find the Claude agent — currently only Claude uses hooks
+        agent = next(
+            (a for a in self.agents if a.type == AgentType.CLAUDE), None,
+        )
+        if not agent:
+            log.warning("ExitPlanMode hook fired but no Claude agent found")
+            return
+
+        agent_name = agent.name
+        self.pending_plans[agent.id] = PendingPlan(
+            agent_id=agent.id,
+            agent_name=agent_name,
+            tool_use_id=tool_use_id,
+            plan_text=plan_text,
+        )
+        log.info("[%s] Plan review pending: %s", agent_name, plan_text[:100])
+        if self.on_plan_review:
+            self.on_plan_review(agent.id, plan_text, tool_use_id)

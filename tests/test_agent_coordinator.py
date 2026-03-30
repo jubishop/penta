@@ -752,16 +752,11 @@ class TestQuestionEvent:
         # Should be WAITING_FOR_USER
         assert AgentStatus.WAITING_FOR_USER in statuses
 
-        # Answer the question to unblock
-        await coord.respond_to_question(
-            "cr_1",
-            [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}],
-            {"Which?": "A"},
-        )
+        # Unblock the fake service so the stream completes
+        await fake.respond({})
         await response.wait_for_completion()
 
         assert response.text == "Thanks for answering!"
-        assert AgentStatus.PROCESSING in statuses
 
     async def test_question_fires_callback(
         self, memory_db: PentaDB,
@@ -784,29 +779,7 @@ class TestQuestionEvent:
         assert asked[0][2] == "cr_q"
 
         # Unblock
-        await coord.respond_to_question("cr_q", questions, {"Pick one": "X"})
-
-    async def test_respond_to_question_calls_service_respond(
-        self, memory_db: PentaDB,
-    ):
-        fake = FakeAgentService()
-        fake.enqueue_question(questions=[{"question": "Q?"}], control_request_id="cr_5")
-        coord = _make_coordinator(memory_db, fake)
-
-        conversation: list[Message] = []
-        coord.send(TaggedMessage(sender_label="User", text="go"), conversation)
-        await asyncio.sleep(0)
-
-        await coord.respond_to_question("cr_5", [{"question": "Q?"}], {"Q?": "answer"})
-
-        assert len(fake.respond_calls) == 1
-        payload = fake.respond_calls[0]
-        assert payload["type"] == "control_response"
-        resp = payload["response"]
-        assert resp["request_id"] == "cr_5"
-        assert resp["response"]["behavior"] == "allow"
-        assert resp["response"]["updatedInput"]["questions"] == [{"question": "Q?"}]
-        assert resp["response"]["updatedInput"]["answers"] == {"Q?": "answer"}
+        await fake.respond({})
 
 
 class TestPlanReviewEvent:
@@ -828,9 +801,8 @@ class TestPlanReviewEvent:
 
         assert AgentStatus.WAITING_FOR_USER in statuses
 
-        # Approve to unblock
-        await coord.approve_plan("cr_plan_1")
-        # Let the stream finish
+        # Unblock the fake service so the stream completes
+        await fake.respond({})
         await asyncio.sleep(0)
 
     async def test_plan_review_fires_callback(
@@ -852,48 +824,7 @@ class TestPlanReviewEvent:
         assert reviews[0][2] == "cr_p2"
 
         # Unblock
-        await coord.approve_plan("cr_p2")
-
-    async def test_approve_plan_calls_service_respond(
-        self, memory_db: PentaDB,
-    ):
-        fake = FakeAgentService()
-        fake.enqueue_plan_review(plan_text="plan", control_request_id="cr_p3")
-        coord = _make_coordinator(memory_db, fake)
-
-        conversation: list[Message] = []
-        coord.send(TaggedMessage(sender_label="User", text="go"), conversation)
-        await asyncio.sleep(0)
-
-        await coord.approve_plan("cr_p3")
-
-        assert len(fake.respond_calls) == 1
-        payload = fake.respond_calls[0]
-        assert payload["type"] == "control_response"
-        resp = payload["response"]
-        assert resp["request_id"] == "cr_p3"
-        assert resp["response"]["behavior"] == "allow"
-
-    async def test_reject_plan_calls_service_respond_with_deny(
-        self, memory_db: PentaDB,
-    ):
-        fake = FakeAgentService()
-        fake.enqueue_plan_review(plan_text="plan", control_request_id="cr_p4")
-        coord = _make_coordinator(memory_db, fake)
-
-        conversation: list[Message] = []
-        coord.send(TaggedMessage(sender_label="User", text="go"), conversation)
-        await asyncio.sleep(0)
-
-        await coord.reject_plan("cr_p4", "needs more detail")
-
-        assert len(fake.respond_calls) == 1
-        payload = fake.respond_calls[0]
-        assert payload["type"] == "control_response"
-        resp = payload["response"]
-        assert resp["request_id"] == "cr_p4"
-        assert resp["response"]["behavior"] == "deny"
-        assert resp["response"]["message"] == "needs more detail"
+        await fake.respond({})
 
 
 class TestCancelDuringWaitingForUser:

@@ -33,8 +33,10 @@ class AgentCoordinator:
         other_agent_names: list[str] | None = None,
         session_id: str | None = None,
         service: AgentService | None = None,
+        hook_settings: str | None = None,
     ) -> None:
         self.config = config
+        self._hook_settings = hook_settings
         self.service: AgentService = service or self._create_service(executable)
         self.session_id = session_id
         self.full_history: list[TaggedMessage] = []
@@ -112,54 +114,6 @@ class AgentCoordinator:
         if self._cancel_task:
             await self._cancel_task
         await self.service.shutdown()
-
-    # -- Interactive responses --
-
-    async def respond_to_question(
-        self,
-        control_request_id: str,
-        questions: list[dict],
-        answers: dict[str, str],
-    ) -> None:
-        """Send the user's answers back to Claude for an AskUserQuestion."""
-        self.set_status(AgentStatus.PROCESSING)
-        await self.service.respond({
-            "type": "control_response",
-            "response": {
-                "subtype": "success",
-                "request_id": control_request_id,
-                "response": {
-                    "behavior": "allow",
-                    "updatedInput": {"questions": questions, "answers": answers},
-                },
-            },
-        })
-
-    async def approve_plan(self, control_request_id: str) -> None:
-        """Approve a plan and let Claude continue executing."""
-        self.set_status(AgentStatus.PROCESSING)
-        await self.service.respond({
-            "type": "control_response",
-            "response": {
-                "subtype": "success",
-                "request_id": control_request_id,
-                "response": {"behavior": "allow"},
-            },
-        })
-
-    async def reject_plan(
-        self, control_request_id: str, feedback: str,
-    ) -> None:
-        """Reject a plan with feedback — Claude stays in plan mode."""
-        self.set_status(AgentStatus.PROCESSING)
-        await self.service.respond({
-            "type": "control_response",
-            "response": {
-                "subtype": "success",
-                "request_id": control_request_id,
-                "response": {"behavior": "deny", "message": feedback},
-            },
-        })
 
     # -- Prompt construction --
 
@@ -354,6 +308,7 @@ class AgentCoordinator:
             return ClaudeService(
                 executable=executable,
                 model=self.config.model,
+                hook_settings=self._hook_settings,
             )
         else:
             return CodexService(
