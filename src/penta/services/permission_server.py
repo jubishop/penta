@@ -105,8 +105,11 @@ class PermissionServer:
 
         if self._server:
             self._server.shutdown()
+            self._server.server_close()
         if self._thread:
             self._thread.join(timeout=2)
+        self._server = None
+        self._thread = None
         log.info("Permission server stopped")
 
     # -- Resolvers (called by TUI) --
