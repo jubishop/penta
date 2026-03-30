@@ -16,6 +16,9 @@ BUILD_LOG="/tmp/prep-worktree-$(basename "$WORKTREE_PATH").log"
 
 (
   cd "$WORKTREE_PATH" &&
+  # macOS: .claude/ has the UF_HIDDEN flag, which new files inherit.
+  # Python 3.14 skips hidden .pth files, breaking editable installs.
+  chflags -R nohidden "$WORKTREE_PATH" 2>/dev/null || true &&
   python3 -m venv --upgrade-deps .venv &&
   .venv/bin/pip install -q -e ".[dev]"
 ) > "$BUILD_LOG" 2>&1 </dev/null &
