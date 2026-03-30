@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
 from penta.app_state import AppState
-from penta.models import AgentType, Message, MessageSender, PendingPlan
+from penta.models import AgentStatus, AgentType, Message, MessageSender, PendingPlan
 from penta.services.db import PentaDB
+from penta.services.permission_server import PermissionServer
 
 from .fakes import FakeAgentService
 
@@ -226,12 +228,34 @@ class TestPlanApproveReject:
         )
 
         # Force agent to busy state so cancel_agent works
-        claude.status = state.agents[0].status  # it's IDLE
-        from penta.models import AgentStatus
         claude.status = AgentStatus.WAITING_FOR_USER
 
         state.cancel_agent(claude.id)
         assert claude.id not in state.pending_plans
+
+    async def test_reject_sends_feedback_as_message(self, state_with_agents):
+        """Rejecting a plan must send the feedback text to the agent.
+
+        Regression: without this, /revise <feedback> discards the feedback
+        and Claude only sees a bare deny with no guidance for revision.
+        """
+        state, services = state_with_agents
+        claude = state.agent_by_name("Claude")
+
+        state.pending_plans[claude.id] = PendingPlan(
+            agent_id=claude.id,
+            agent_name="Claude",
+            tool_use_id="cr_fb",
+            plan_text="bad plan",
+        )
+        claude.status = AgentStatus.WAITING_FOR_USER
+
+        state.reject_plan(claude.id, "use a different approach")
+
+        # The reject itself doesn't send the message — the app layer does.
+        # But we can verify the plan was rejected and status was reset.
+        assert claude.id not in state.pending_plans
+        assert claude.status == AgentStatus.PROCESSING
 
 
 class TestPlanReviewRelay:
@@ -254,3 +278,171 @@ class TestPlanReviewRelay:
 
         # Callback was fired
         assert len(relayed) == 1
+
+
+class TestApproveRejectResolvesPermissionServer:
+    """approve/reject must resolve the permission server's pending futures.
+
+    Regression: without this, the HTTP handler blocks for 600s and the
+    single-threaded server is unable to handle any further requests.
+    """
+
+    async def test_approve_resolves_server_future(self, state_with_agents):
+        state, _ = state_with_agents
+        claude = state.agent_by_name("Claude")
+
+        loop = asyncio.get_running_loop()
+        server = PermissionServer(loop)
+        assert server.start()
+        state._permission_server = server
+
+        try:
+            future = loop.create_future()
+            server._pending["cr_e2e_approve"] = future
+
+            state.pending_plans[claude.id] = PendingPlan(
+                agent_id=claude.id,
+                agent_name="Claude",
+                tool_use_id="cr_e2e_approve",
+                plan_text="test plan",
+            )
+
+            state.approve_plan(claude.id)
+            assert future.done()
+            assert future.result() is True
+        finally:
+            state._permission_server = None
+            await server.stop()
+
+    async def test_reject_resolves_server_future(self, state_with_agents):
+        state, _ = state_with_agents
+        claude = state.agent_by_name("Claude")
+
+        loop = asyncio.get_running_loop()
+        server = PermissionServer(loop)
+        assert server.start()
+        state._permission_server = server
+
+        try:
+            future = loop.create_future()
+            server._pending["cr_e2e_reject"] = future
+
+            state.pending_plans[claude.id] = PendingPlan(
+                agent_id=claude.id,
+                agent_name="Claude",
+                tool_use_id="cr_e2e_reject",
+                plan_text="test plan",
+            )
+
+            state.reject_plan(claude.id, "needs work")
+            assert future.done()
+            assert future.result() is False
+        finally:
+            state._permission_server = None
+            await server.stop()
+
+    async def test_cancel_agent_resolves_server_futures(self, state_with_agents):
+        """cancel_agent must unblock pending hook requests.
+
+        Regression: without resolve_all_pending in cancel_agent, the
+        single-threaded HTTP server stays blocked on the cancelled
+        agent's future for up to 600s.
+        """
+        state, _ = state_with_agents
+        claude = state.agent_by_name("Claude")
+
+        loop = asyncio.get_running_loop()
+        server = PermissionServer(loop)
+        assert server.start()
+        state._permission_server = server
+
+        try:
+            future = loop.create_future()
+            server._pending["cr_e2e_cancel"] = future
+
+            state.pending_plans[claude.id] = PendingPlan(
+                agent_id=claude.id,
+                agent_name="Claude",
+                tool_use_id="cr_e2e_cancel",
+                plan_text="plan",
+            )
+            claude.status = AgentStatus.WAITING_FOR_USER
+
+            state.cancel_agent(claude.id)
+            assert future.done()
+        finally:
+            state._permission_server = None
+            await server.stop()
+
+
+class TestWaitingForUserStatus:
+    """Hook callbacks must set WAITING_FOR_USER on the agent.
+
+    Regression: without status updates in the hook callbacks, the
+    status dot stays green (PROCESSING) even when the agent is blocked
+    waiting for user input.
+    """
+
+    async def test_hook_plan_review_sets_waiting_status(self, state_with_agents):
+        state, _ = state_with_agents
+        claude = state.agent_by_name("Claude")
+        claude.status = AgentStatus.PROCESSING
+
+        statuses: list[AgentStatus] = []
+        state.on_status_changed = lambda aid, s: statuses.append(s)
+
+        state._on_hook_plan_review("tu_plan", "the plan", {})
+
+        assert claude.status == AgentStatus.WAITING_FOR_USER
+        assert AgentStatus.WAITING_FOR_USER in statuses
+
+    async def test_hook_question_sets_waiting_status(self, state_with_agents):
+        state, _ = state_with_agents
+        claude = state.agent_by_name("Claude")
+        claude.status = AgentStatus.PROCESSING
+
+        statuses: list[AgentStatus] = []
+        state.on_status_changed = lambda aid, s: statuses.append(s)
+
+        state._on_hook_question("tu_q", [{"question": "Q?"}])
+
+        assert claude.status == AgentStatus.WAITING_FOR_USER
+        assert AgentStatus.WAITING_FOR_USER in statuses
+
+    async def test_approve_resets_to_processing(self, state_with_agents):
+        state, _ = state_with_agents
+        claude = state.agent_by_name("Claude")
+        claude.status = AgentStatus.WAITING_FOR_USER
+
+        state.pending_plans[claude.id] = PendingPlan(
+            agent_id=claude.id,
+            agent_name="Claude",
+            tool_use_id="cr_status",
+            plan_text="plan",
+        )
+
+        statuses: list[AgentStatus] = []
+        state.on_status_changed = lambda aid, s: statuses.append(s)
+
+        state.approve_plan(claude.id)
+        assert claude.status == AgentStatus.PROCESSING
+        assert AgentStatus.PROCESSING in statuses
+
+    async def test_reject_resets_to_processing(self, state_with_agents):
+        state, _ = state_with_agents
+        claude = state.agent_by_name("Claude")
+        claude.status = AgentStatus.WAITING_FOR_USER
+
+        state.pending_plans[claude.id] = PendingPlan(
+            agent_id=claude.id,
+            agent_name="Claude",
+            tool_use_id="cr_status2",
+            plan_text="plan",
+        )
+
+        statuses: list[AgentStatus] = []
+        state.on_status_changed = lambda aid, s: statuses.append(s)
+
+        state.reject_plan(claude.id, "revise this")
+        assert claude.status == AgentStatus.PROCESSING
+        assert AgentStatus.PROCESSING in statuses

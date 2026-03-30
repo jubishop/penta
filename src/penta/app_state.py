@@ -20,7 +20,6 @@ from penta.models.pending_plan import PendingPlan
 from penta.models.tagged_message import TaggedMessage
 from penta.routing import MessageRouter
 from penta.services.agent_service import AgentService
-from penta.services.claude_service import ClaudeService
 from penta.services.db import PentaDB
 from penta.services.permission_server import PermissionServer
 
@@ -158,6 +157,8 @@ class AppState:
         if coord and coord.config.status.is_busy:
             coord.cancel()
             self.pending_plans.pop(agent_id, None)
+            if self._permission_server:
+                self._permission_server.resolve_all_pending()
             return True
         return False
 
@@ -169,6 +170,8 @@ class AppState:
                 coord.cancel()
                 self.pending_plans.pop(coord.config.id, None)
                 count += 1
+        if count and self._permission_server:
+            self._permission_server.resolve_all_pending()
         return count
 
     @property
@@ -221,6 +224,11 @@ class AppState:
         plan = self.pending_plans.pop(agent_id, None)
         if not plan:
             return
+        agent = self.agent_by_id(agent_id)
+        if agent:
+            agent.status = AgentStatus.PROCESSING
+            if self.on_status_changed:
+                self.on_status_changed(agent_id, AgentStatus.PROCESSING)
         if self._permission_server:
             self._permission_server.resolve_plan_review(plan.tool_use_id, True)
             log.info("[%s] Plan approved", plan.agent_name)
@@ -229,6 +237,11 @@ class AppState:
         plan = self.pending_plans.pop(agent_id, None)
         if not plan:
             return
+        agent = self.agent_by_id(agent_id)
+        if agent:
+            agent.status = AgentStatus.PROCESSING
+            if self.on_status_changed:
+                self.on_status_changed(agent_id, AgentStatus.PROCESSING)
         if self._permission_server:
             self._permission_server.resolve_plan_review(plan.tool_use_id, False)
             log.info("[%s] Plan rejected: %s", plan.agent_name, feedback)
@@ -294,9 +307,12 @@ class AppState:
         self.db.pause_polling()
 
         try:
-            # 2. Cancel active streams
+            # 2. Cancel active streams and unblock pending hooks
             for coord in self.coordinators.values():
                 coord.cancel()
+            if self._permission_server:
+                self._permission_server.resolve_all_pending()
+            self.pending_plans.clear()
 
             # 3. Wait for pending routing tasks to persist to the current conversation
             await self.router.drain()
@@ -433,7 +449,7 @@ class AppState:
                 pass
             self._poll_task = None
         if self._permission_server:
-            self._permission_server.stop()
+            await self._permission_server.stop()
         for coord in self.coordinators.values():
             await coord.shutdown()
         await self.db.close()
@@ -496,6 +512,9 @@ class AppState:
         )
         if not agent:
             return
+        agent.status = AgentStatus.WAITING_FOR_USER
+        if self.on_status_changed:
+            self.on_status_changed(agent.id, AgentStatus.WAITING_FOR_USER)
         log.info("[%s] Question intercepted (%d questions)", agent.name, len(questions))
         if self.on_question_asked:
             self.on_question_asked(agent.id, questions, tool_use_id)
@@ -516,6 +535,9 @@ class AppState:
             log.warning("ExitPlanMode hook fired but no Claude agent found")
             return
 
+        agent.status = AgentStatus.WAITING_FOR_USER
+        if self.on_status_changed:
+            self.on_status_changed(agent.id, AgentStatus.WAITING_FOR_USER)
         agent_name = agent.name
         self.pending_plans[agent.id] = PendingPlan(
             agent_id=agent.id,

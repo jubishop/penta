@@ -28,6 +28,7 @@ class PermissionServer:
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
         self._pending: dict[str, asyncio.Future] = {}
+        self._shutting_down = threading.Event()
         self._on_plan_review: Callable[[str, str, dict], None] | None = None
         self._on_question: Callable[[str, list[dict]], None] | None = None
         self._server: HTTPServer | None = None
@@ -97,20 +98,36 @@ class PermissionServer:
         log.info("Permission server started on port %d", self.port)
         return True
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
+        self._shutting_down.set()
         for tool_use_id, future in list(self._pending.items()):
             if not future.done():
                 future.set_result(True)
         self._pending.clear()
-
+        # Yield so resolved futures' coroutines can complete,
+        # unblocking HTTP handlers waiting on concurrent futures.
+        await asyncio.sleep(0)
         if self._server:
-            self._server.shutdown()
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._server.shutdown)
             self._server.server_close()
         if self._thread:
             self._thread.join(timeout=2)
         self._server = None
         self._thread = None
         log.info("Permission server stopped")
+
+    def resolve_all_pending(self) -> None:
+        """Resolve all pending futures so HTTP handlers can unblock.
+
+        Called when agents are cancelled or conversations switch.
+        Plans are auto-approved; question handlers detect the non-dict
+        result and return a bare allow.
+        """
+        for tool_use_id, future in list(self._pending.items()):
+            if not future.done():
+                future.set_result(True)
+        self._pending.clear()
 
     # -- Resolvers (called by TUI) --
 
@@ -156,6 +173,8 @@ class PermissionServer:
     # -- Internal handlers (run on HTTP thread) --
 
     def _handle_question(self, tool_use_id: str, tool_input: dict) -> str:
+        if self._shutting_down.is_set():
+            return json.dumps({"hookSpecificOutput": {"permissionDecision": "allow"}})
         questions = tool_input.get("questions", []) if isinstance(tool_input, dict) else []
         log.info("AskUserQuestion hook — pausing for user answers (%d questions)", len(questions))
 
@@ -172,6 +191,10 @@ class PermissionServer:
             log.exception("Question answer future failed")
             return json.dumps({"hookSpecificOutput": {"permissionDecision": "allow"}})
 
+        if not isinstance(answers, dict):
+            # Resolved by shutdown/cancel — allow without injecting answers
+            return json.dumps({"hookSpecificOutput": {"permissionDecision": "allow"}})
+
         # Build updatedInput with the user's answers
         updated = dict(tool_input)
         updated["answers"] = answers
@@ -186,6 +209,8 @@ class PermissionServer:
         })
 
     def _handle_plan_review(self, tool_use_id: str, tool_input: dict) -> str:
+        if self._shutting_down.is_set():
+            return json.dumps({"hookSpecificOutput": {"permissionDecision": "allow"}})
         plan_text = ""
         if isinstance(tool_input, dict):
             plan_text = tool_input.get("plan", "")
@@ -217,6 +242,11 @@ class PermissionServer:
     ) -> dict[str, str]:
         future = self._loop.create_future()
         self._pending[tool_use_id] = future
+        # Check after registering: stop() may have already run.
+        if self._shutting_down.is_set():
+            if not future.done():
+                future.set_result({})
+            return await future
         if self._on_question:
             self._on_question(tool_use_id, questions)
         return await future
@@ -226,6 +256,11 @@ class PermissionServer:
     ) -> bool:
         future = self._loop.create_future()
         self._pending[tool_use_id] = future
+        # Check after registering: stop() may have already run.
+        if self._shutting_down.is_set():
+            if not future.done():
+                future.set_result(True)
+            return await future
         if self._on_plan_review:
             self._on_plan_review(tool_use_id, plan_text, full_input)
         return await future

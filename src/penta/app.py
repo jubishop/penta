@@ -182,11 +182,11 @@ class PentaApp(App):
         if re.search(r"/plan\b", text, re.IGNORECASE) and len(self._state.pending_plans) > 1:
             def on_pick(agent_id: UUID | None) -> None:
                 if agent_id is not None:
-                    task = asyncio.create_task(
-                        self._state.send_user_message(text, resolved_plan_id=agent_id)
-                    )
+                    async def _send_and_render():
+                        await self._state.send_user_message(text, resolved_plan_id=agent_id)
+                        self._render_new_messages()
+                    task = asyncio.create_task(_send_and_render())
                     task.add_done_callback(log_task_error)
-                    self._render_new_messages()
 
             self.push_screen(
                 PlanPickerScreen(self._state.pending_plans), callback=on_pick,
@@ -335,7 +335,11 @@ class PentaApp(App):
             self.notify("Please provide feedback for the revision", severity="warning")
             return
 
+        agent = self._state.agent_by_id(agent_id)
+        agent_name = agent.name if agent else "Agent"
         self._state.reject_plan(agent_id, feedback)
+        # Send revision feedback to the agent so it sees why the plan was rejected
+        await self._state.send_user_message(f"@{agent_name} Please revise your plan: {feedback}")
         self._render_new_messages()
 
     def _resolve_plan_agent(self, agent_name: str | None) -> UUID | None:
@@ -353,7 +357,7 @@ class PentaApp(App):
             return next(iter(plans))
         # Multiple plans — show picker
         self.notify(
-            "Multiple plans pending. Use /approve <AgentName>",
+            "Multiple plans pending. Specify an agent name, e.g. /approve Claude",
             severity="warning",
         )
         return None
@@ -387,6 +391,10 @@ class PentaApp(App):
                 # User dismissed — provide empty answers so Claude can continue
                 answers = {q.get("question", ""): "" for q in questions}
             self._state._permission_server.resolve_question(tool_use_id, answers)
+            # Resume processing status
+            coord = self._state.coordinators.get(agent_id)
+            if coord:
+                coord.set_status(AgentStatus.PROCESSING)
 
         self.push_screen(
             QuestionPickerScreen(agent_name, questions),

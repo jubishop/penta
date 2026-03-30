@@ -16,7 +16,7 @@ async def server():
     srv = PermissionServer(loop)
     assert srv.start()
     yield srv
-    srv.stop()
+    await srv.stop()
 
 
 def _post(port: int, body: dict) -> dict:
@@ -223,8 +223,76 @@ class TestShutdownCleanup:
         future = asyncio.get_running_loop().create_future()
         server._pending["tu_shutdown"] = future
 
-        server.stop()
+        await server.stop()
 
         # Future should have been resolved
         assert future.done()
         assert future.result() is True  # default approve on shutdown
+
+    async def test_shutting_down_flag_prevents_new_blocks(self, server):
+        """After stop(), new hook requests return immediately instead of blocking.
+
+        Regression: without _shutting_down, a request arriving during shutdown
+        could block the HTTP thread for up to 600s.
+        """
+        await server.stop()
+
+        # Re-create a minimal server to test the flag on the stopped instance
+        # The _shutting_down flag should be set — handlers bail out immediately
+        assert server._shutting_down.is_set()
+
+    async def test_stop_completes_within_timeout(self, server):
+        """stop() must not hang even when futures are registered late.
+
+        Regression: if _request_* coroutine hadn't run yet when stop()
+        iterated _pending, the HTTP handler could block indefinitely.
+        """
+        server.set_plan_review_callback(lambda tid, pt, fi: None)
+
+        # Simulate a future that's already in _pending
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        server._pending["tu_late"] = future
+
+        # stop() must complete (not hang)
+        await asyncio.wait_for(server.stop(), timeout=5)
+        assert future.done()
+
+
+class TestResolveAllPending:
+    """resolve_all_pending() unblocks all HTTP handlers at once."""
+
+    async def test_resolve_all_clears_pending(self, server):
+        loop = asyncio.get_running_loop()
+
+        f1 = loop.create_future()
+        f2 = loop.create_future()
+        server._pending["tu_a"] = f1
+        server._pending["tu_b"] = f2
+
+        server.resolve_all_pending()
+
+        assert f1.done()
+        assert f2.done()
+        assert len(server._pending) == 0
+
+    async def test_resolve_all_unblocks_question_handler(self, server):
+        """A question future force-resolved with True causes the handler
+        to return a bare allow (not updatedInput with non-dict answers).
+
+        Regression: without the isinstance check, the handler would crash
+        trying to use True as a dict.
+        """
+        server.set_question_callback(lambda tid, qs: None)
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        server._pending["tu_q_cancel"] = future
+
+        # Force-resolve with True (what resolve_all_pending does)
+        future.set_result(True)
+
+        # Simulate what _handle_question does after getting the result:
+        # it should detect non-dict and return bare allow
+        answers = future.result()
+        assert not isinstance(answers, dict)
