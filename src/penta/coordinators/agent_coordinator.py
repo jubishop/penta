@@ -187,7 +187,8 @@ class AgentCoordinator:
                             "[%s] Tool use: %s",
                             self.config.name, event.tool_name,
                         )
-                        response.thinking_text += f"> Using {event.tool_name}...\n"
+                        prefix = "\n" if response.thinking_text and not response.thinking_text.endswith("\n") else ""
+                        response.thinking_text += f"{prefix}> Using {event.tool_name}...\n"
                         if self.on_text_delta:
                             self.on_text_delta(self.config.id, "")
                         self.set_status(AgentStatus.PROCESSING)

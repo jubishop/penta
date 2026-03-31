@@ -39,6 +39,7 @@ Test at behavioral boundaries by controlling external touchpoints through fakes,
 - **Shared fixtures in `conftest.py`**: Use `memory_db`, `fake_service`, `service_factory`, `fake_services`, `app_state`, `multi_agent_state` from `tests/conftest.py`. Don't duplicate DB or service fixtures in individual test files.
 - **No `asyncio.sleep` in tests**: Wait on `Message.wait_for_completion()` or `router.drain()`, not fixed sleeps. The only acceptable sleep is `asyncio.sleep(0)` to yield to the event loop so a just-created task can advance to its first await. This follows the project-wide `asyncio.Event` for completion signaling pattern.
 - **Textual pilot for UI tests**: Use `app.run_test()` for widget/UI-level tests.
+- **Self-isolated tests**: Every test must be fully self-contained — no shared mutable state between tests. Each test creates its own fixtures (DB, fakes, app state) so the entire suite can run in parallel without interference.
 
 ### Running tests
 
