@@ -236,9 +236,6 @@ class PentaApp(App):
                 self._conversation_task(self._handle_delete(result.conversation_id))
             elif result.action is ConversationAction.NEW:
                 self._conversation_task(self.action_new_conversation())
-            elif result.action is ConversationAction.RENAME:
-                self._conversation_task(self._handle_rename(result.conversation_id, result.title))
-
         self.push_screen(
             ConversationListScreen(conversations, current_id),
             callback=handle_result,
@@ -257,6 +254,11 @@ class PentaApp(App):
         deleted = await self._state.delete_conversation(conversation_id)
         if not deleted:
             self.notify("Cannot delete the active or only conversation", severity="warning")
+
+    def on_conversation_list_screen_rename_requested(
+        self, event: ConversationListScreen.RenameRequested,
+    ) -> None:
+        self._conversation_task(self._handle_rename(event.conversation_id, event.title))
 
     async def _handle_rename(self, conversation_id: int, title: str) -> None:
         await self._state.rename_conversation(conversation_id, title)
