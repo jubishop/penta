@@ -20,8 +20,13 @@ class TestClaudeArgBuilding:
         assert "-p" in args
         assert "--verbose" in args
         assert "--output-format" in args
+        assert "stream-json" in args
         assert "--include-partial-messages" in args
         assert "--dangerously-skip-permissions" in args
+        # No stdin-based flags
+        assert "--input-format" not in args
+        assert "--permission-prompt-tool" not in args
+        # Prompt IS the last CLI arg
         assert args[-1] == "hello"
 
     def test_resume_session_args(self):
@@ -29,13 +34,15 @@ class TestClaudeArgBuilding:
         args = service._build_args("follow up", session_id="sess-123", system_prompt=None)
         assert "--resume" in args
         assert args[args.index("--resume") + 1] == "sess-123"
+        # Prompt IS the last CLI arg
+        assert args[-1] == "follow up"
 
     def test_system_prompt_uses_append_flag(self):
         service = ClaudeService(executable="/usr/bin/claude")
         args = service._build_args("hello", session_id=None, system_prompt="You are X.")
         assert "--append-system-prompt" in args
         assert args[args.index("--append-system-prompt") + 1] == "You are X."
-        # System prompt should NOT be prepended to the user prompt
+        # Prompt IS the last CLI arg
         assert args[-1] == "hello"
 
     def test_model_flag(self):
@@ -43,6 +50,15 @@ class TestClaudeArgBuilding:
         args = service._build_args("hello", session_id=None, system_prompt=None)
         assert "--model" in args
         assert args[args.index("--model") + 1] == "opus"
+
+    def test_hook_settings_uses_settings_flag(self):
+        """When hook_settings is provided, use --settings instead of --dangerously-skip-permissions."""
+        service = ClaudeService(executable="/usr/bin/claude", hook_settings='{"hooks":{}}')
+        args = service._build_args("hello", session_id=None, system_prompt=None)
+        assert "--settings" in args
+        assert args[args.index("--settings") + 1] == '{"hooks":{}}'
+        assert "--dangerously-skip-permissions" not in args
+        assert args[-1] == "hello"
 
 
 class TestClaudeEventParsing:
@@ -403,8 +419,6 @@ class TestClaudeFullTranscript:
         assert types.count(StreamEventType.SESSION_STARTED) == 1
 
 
-# -- Helpers ------------------------------------------------------------------
-
 class TestConcurrentStreamingGuard:
     """CliAgentService must reject concurrent send() calls."""
 
@@ -439,6 +453,9 @@ class TestConcurrentStreamingGuard:
             async for _ in service.send("test", None, Path("/tmp")):
                 pass
         assert service._streaming is False
+
+
+# -- Helpers ------------------------------------------------------------------
 
 
 async def _run_with_lines(

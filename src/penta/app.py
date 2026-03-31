@@ -11,13 +11,15 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer, Static
 
-from penta.models import AgentStatus, AgentType, Message, AgentConfig
+from penta.models import AgentStatus, AgentType, Message, AgentConfig, MessageSender
 from penta.app_state import AppState
 from penta.utils import log_task_error
 from penta.widgets.chat_message import ChatMessage
 from penta.widgets.chat_room import ChatRoom, NewContentIndicator
 from penta.widgets.conversation_list import ConversationAction, ConversationListResult, ConversationListScreen
 from penta.widgets.input_bar import InputBar
+from penta.widgets.plan_picker import PlanPickerScreen
+from penta.widgets.question_picker import QuestionPickerScreen
 from penta.widgets.status_indicator import ExternalIndicator, StatusIndicator
 
 log = logging.getLogger(__name__)
@@ -62,7 +64,7 @@ class PentaApp(App):
     def action_stop_agents(self) -> None:
         """Stop all currently streaming agents."""
         if self._state:
-            self._state.cancel_all_streaming()
+            self._state.cancel_all_busy()
 
     def on_status_indicator_stop_requested(
         self, event: StatusIndicator.StopRequested,
@@ -103,6 +105,8 @@ class PentaApp(App):
         state.on_stream_complete = self._on_stream_complete
         state.on_status_changed = self._on_status_changed
         state.on_conversation_switched = self._on_conversation_switched
+        state.on_question_asked = self._on_question_asked
+        state.on_plan_review = self._on_plan_review
         state.router.on_external_message = self._on_external_message
         state.router.on_external_participant_joined = self._on_external_participant_joined
 
@@ -136,6 +140,13 @@ class PentaApp(App):
         if trimmed:
             self._messages.rendered_up_to = len(state.conversation)
 
+        # Warn if permission server failed (plan review/questions disabled)
+        if state._permission_server is None:
+            self.notify(
+                "Permission server unavailable — plans and questions will be auto-approved",
+                severity="warning",
+            )
+
         # Update title with conversation name
         self._update_title()
 
@@ -161,7 +172,35 @@ class PentaApp(App):
     async def on_input_bar_submitted(self, event: InputBar.Submitted) -> None:
         if not self._state or self._switching:
             return
-        await self._state.send_user_message(event.text.strip())
+        text = event.text.strip()
+
+        # /approve [AgentName] — approve a pending plan
+        lower = text.lower()
+        if lower == "/approve" or lower.startswith("/approve "):
+            self._handle_approve(text)
+            return
+
+        # /revise [AgentName] <feedback> — reject a plan with feedback
+        if lower == "/revise" or lower.startswith("/revise "):
+            await self._handle_revise(text)
+            return
+
+        # If message contains /plan and multiple plans exist, show picker
+        if self._state._PLAN_TOKEN_RE.search(text) and len(self._state.pending_plans) > 1:
+            def on_pick(agent_id: UUID | None) -> None:
+                if agent_id is not None:
+                    async def _send_and_render():
+                        await self._state.send_user_message(text, resolved_plan_id=agent_id)
+                        self._render_new_messages()
+                    task = asyncio.create_task(_send_and_render())
+                    task.add_done_callback(log_task_error)
+
+            self.push_screen(
+                PlanPickerScreen(self._state.pending_plans), callback=on_pick,
+            )
+            return
+
+        await self._state.send_user_message(text)
         self._render_new_messages()
 
     # -- Conversation management --
@@ -256,6 +295,144 @@ class PentaApp(App):
         safe_title = rich_escape(self._state.current_conversation_title)
         title_widget.update(
             f"Penta -- {self._directory.name} / {safe_title}"
+        )
+
+    # -- Plan / Question handling --
+
+    def _handle_approve(self, text: str) -> None:
+        """Handle /approve [AgentName]."""
+        parts = text.split(maxsplit=1)
+        agent_name = parts[1].strip() if len(parts) > 1 else None
+        agent_id = self._resolve_plan_agent(agent_name)
+        if agent_id is None:
+            return
+        # Add plan text as a visible message in conversation
+        plan = self._state.pending_plans.get(agent_id)
+        if plan:
+            self._state.conversation.append(
+                Message(
+                    sender=MessageSender.agent(agent_id),
+                    text=f"**Approved plan:**\n\n{plan.plan_text}",
+                )
+            )
+        self._state.approve_plan(agent_id)
+        self._render_new_messages()
+
+    async def _handle_revise(self, text: str) -> None:
+        """Handle /revise [AgentName] <feedback>."""
+        parts = text.split(maxsplit=2)
+        if len(parts) < 2:
+            self.notify("Usage: /revise [AgentName] <feedback>", severity="warning")
+            return
+
+        # Try to parse as /revise AgentName feedback
+        candidate_name = parts[1]
+        agent_id = self._resolve_plan_agent_by_name(candidate_name)
+
+        if agent_id is not None:
+            feedback = parts[2] if len(parts) > 2 else ""
+        else:
+            # No agent name match — treat all after /revise as feedback
+            agent_id = self._resolve_plan_agent(None)
+            feedback = text[len("/revise"):].strip()
+
+        if agent_id is None:
+            return
+        if not feedback:
+            self.notify("Please provide feedback for the revision", severity="warning")
+            return
+
+        agent = self._state.agent_by_id(agent_id)
+        agent_name = agent.name if agent else "Agent"
+        self._state.reject_plan(agent_id)
+        # Route feedback directly — bypass /plan interpolation so "/plan"
+        # in user feedback doesn't accidentally inject another agent's plan.
+        await self._state.router.send_user_message(f"@{agent_name} Please revise your plan: {feedback}")
+        self._render_new_messages()
+
+    def _resolve_plan_agent(self, agent_name: str | None) -> UUID | None:
+        """Resolve which pending plan to act on."""
+        plans = self._state.pending_plans
+        if not plans:
+            self.notify("No plans pending", severity="warning")
+            return None
+        if agent_name:
+            agent_id = self._resolve_plan_agent_by_name(agent_name)
+            if agent_id is None:
+                self.notify(f"No pending plan from '{agent_name}'", severity="warning")
+            return agent_id
+        if len(plans) == 1:
+            return next(iter(plans))
+        # Multiple plans — prompt user to specify agent name
+        self.notify(
+            "Multiple plans pending. Specify an agent name, e.g. /approve Claude",
+            severity="warning",
+        )
+        return None
+
+    def _resolve_plan_agent_by_name(self, name: str | None) -> UUID | None:
+        if not name or not self._state:
+            return None
+        agent = self._state.agent_by_name(name)
+        if agent and agent.id in self._state.pending_plans:
+            return agent.id
+        return None
+
+    def _on_question_asked(
+        self, agent_id: UUID, questions: list[dict], tool_use_id: str,
+    ) -> None:
+        """Show the question picker when Claude uses AskUserQuestion.
+
+        The hook HTTP response is blocked until the user answers.
+        Answers are injected via updatedInput so Claude receives them
+        directly as the AskUserQuestion tool result.
+        """
+        if not self._state:
+            return
+        agent = self._state.agent_by_id(agent_id)
+        agent_name = agent.name if agent else "Agent"
+
+        def on_answers(answers: dict[str, str] | None) -> None:
+            if not self._state:
+                return
+            if answers is None:
+                # User cancelled — cancel the agent's stream
+                self._state.cancel_agent(agent_id)
+                return
+            if not self._state._permission_server:
+                return
+            self._state._permission_server.resolve_question(tool_use_id, answers)
+            # Resume processing status
+            coord = self._state.coordinators.get(agent_id)
+            if coord:
+                coord.set_status(AgentStatus.PROCESSING)
+
+        self.push_screen(
+            QuestionPickerScreen(agent_name, questions),
+            callback=on_answers,
+        )
+
+    def _on_plan_review(
+        self, agent_id: UUID, plan_text: str, tool_use_id: str,
+    ) -> None:
+        """Show the plan as an inline message and notify the user."""
+        if not self._state:
+            return
+        agent = self._state.agent_by_id(agent_id)
+        agent_name = agent.name if agent else "Agent"
+
+        # Add plan as a message in the chat
+        self._state.conversation.append(
+            Message(
+                sender=MessageSender.agent(agent_id),
+                text=f"**Plan awaiting approval:**\n\n{plan_text}",
+            )
+        )
+        self._render_new_messages()
+        self.notify(
+            f"Plan from {agent_name} — /approve, /revise <feedback>, "
+            f"or share with /plan",
+            severity="information",
         )
 
     # -- Callbacks from AppState --

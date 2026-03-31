@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -14,10 +15,12 @@ from penta.models.agent_type import AgentType
 from penta.models.conversation_info import ConversationInfo
 from penta.models.message import Message
 from penta.models.message_sender import MessageSender
+from penta.models.pending_plan import PendingPlan
 from penta.models.tagged_message import TaggedMessage
 from penta.routing import MessageRouter
 from penta.services.agent_service import AgentService
 from penta.services.db import PentaDB
+from penta.services.permission_server import PermissionServer
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +42,7 @@ class AppState:
         self.db = db or PentaDB(self.directory, storage_root=storage_root)
         self._service_factory = service_factory
         self._poll_task: asyncio.Task | None = None
+        self._permission_server: PermissionServer | None = None
 
         self.router = MessageRouter(
             self.agents, self._agents_by_id, self.coordinators, self.conversation, self.db,
@@ -48,11 +52,16 @@ class AppState:
         self.current_conversation_id: int = 1
         self.current_conversation_title: str = "Default"
 
+        # Pending plans awaiting user approval
+        self.pending_plans: dict[UUID, PendingPlan] = {}
+
         # Callbacks for the TUI layer
         self.on_text_delta: Callable[[UUID, str], None] | None = None
         self.on_stream_complete: Callable[[Message, UUID], None] | None = None
         self.on_status_changed: Callable[[UUID, AgentStatus], None] | None = None
         self.on_conversation_switched: Callable[[], None] | None = None
+        self.on_question_asked: Callable[[UUID, list[dict], str], None] | None = None
+        self.on_plan_review: Callable[[UUID, str, str], None] | None = None
 
     async def connect(self) -> None:
         await self.db.connect()
@@ -64,6 +73,21 @@ class AppState:
             if cid == self.current_conversation_id:
                 self.current_conversation_title = title
                 break
+
+        # Start permission server for hook-based plan review
+        if not self._service_factory:  # Skip in tests with fake services
+            self._start_permission_server()
+
+    def _start_permission_server(self) -> None:
+        loop = asyncio.get_running_loop()
+        server = PermissionServer(loop)
+        server.set_plan_review_callback(self._on_hook_plan_review)
+        server.set_question_callback(self._on_hook_question)
+        if server.start():
+            self._permission_server = server
+            log.info("Permission server started on port %d", server.port)
+        else:
+            log.warning("Permission server failed to start — falling back to auto-approve")
 
     # -- Agent management --
 
@@ -87,6 +111,11 @@ class AppState:
                 log.warning("Agent %s: executable not found, marked DISCONNECTED", name)
             service = None
 
+        hook_settings = (
+            self._permission_server.hook_settings_json
+            if self._permission_server and agent_type == AgentType.CLAUDE
+            else None
+        )
         coordinator = AgentCoordinator(
             config=config,
             working_dir=self.directory,
@@ -95,12 +124,11 @@ class AppState:
             other_agent_names=other_names,
             session_id=session_id,
             service=service,
+            hook_settings=hook_settings,
         )
 
         # Wire callbacks through to TUI
-        coordinator.on_text_delta = self._relay_text_delta
-        coordinator.on_stream_complete = self._relay_stream_complete
-        coordinator.on_status_changed = self._relay_status_changed
+        self._wire_coordinator_callbacks(coordinator)
 
         self.coordinators[config.id] = coordinator
 
@@ -125,18 +153,28 @@ class AppState:
     def cancel_agent(self, agent_id: UUID) -> bool:
         """Cancel a specific agent's current stream. Returns True if was streaming."""
         coord = self.coordinators.get(agent_id)
-        if coord and coord.config.status == AgentStatus.PROCESSING:
+        if coord and coord.config.status.is_busy:
             coord.cancel()
+            self.pending_plans.pop(agent_id, None)
+            # Only resolve hooks for agents that use them (Claude)
+            if self._permission_server and coord.config.type == AgentType.CLAUDE:
+                self._permission_server.resolve_all_pending()
             return True
         return False
 
-    def cancel_all_streaming(self) -> int:
-        """Cancel all currently streaming agents. Returns count cancelled."""
+    def cancel_all_busy(self) -> int:
+        """Cancel all busy agents (streaming or waiting for user). Returns count cancelled."""
         count = 0
+        claude_cancelled = False
         for coord in self.coordinators.values():
-            if coord.config.status == AgentStatus.PROCESSING:
+            if coord.config.status.is_busy:
                 coord.cancel()
+                self.pending_plans.pop(coord.config.id, None)
+                if coord.config.type == AgentType.CLAUDE:
+                    claude_cancelled = True
                 count += 1
+        if claude_cancelled and self._permission_server:
+            self._permission_server.resolve_all_pending()
         return count
 
     @property
@@ -149,11 +187,68 @@ class AppState:
 
     # -- Delegated to router --
 
-    async def send_user_message(self, text: str) -> None:
-        await self.router.send_user_message(text)
+    _PLAN_TOKEN_RE = re.compile(r"/plan\b", re.IGNORECASE)
+
+    async def send_user_message(
+        self, text: str, resolved_plan_id: UUID | None = None,
+    ) -> None:
+        """Send a user message, interpolating /plan if present.
+
+        If *resolved_plan_id* is provided, that specific plan is used for
+        interpolation.  Otherwise, when there is exactly one pending plan it
+        is used automatically.  When multiple plans exist and none is
+        specified, the original text is sent without interpolation (the TUI
+        should show the picker first and call again with *resolved_plan_id*).
+        """
+        routed_text: str | None = None
+        if self._PLAN_TOKEN_RE.search(text):
+            plan = self._resolve_plan_for_interpolation(resolved_plan_id)
+            if plan:
+                routed_text = self._PLAN_TOKEN_RE.sub(
+                    f"\n\n{plan.plan_text}\n\n", text,
+                )
+        await self.router.send_user_message(text, routed_text=routed_text)
+
+    def _resolve_plan_for_interpolation(
+        self, explicit_id: UUID | None = None,
+    ) -> PendingPlan | None:
+        if explicit_id is not None:
+            return self.pending_plans.get(explicit_id)
+        if len(self.pending_plans) == 1:
+            return next(iter(self.pending_plans.values()))
+        return None
 
     def receive_external_message(self, sender_name: str, text: str) -> None:
         self.router.receive_external_message(sender_name, text)
+
+    # -- Plan responses (via permission server hook) --
+
+    def approve_plan(self, agent_id: UUID) -> None:
+        plan = self.pending_plans.pop(agent_id, None)
+        if not plan:
+            return
+        agent = self.agent_by_id(agent_id)
+        if agent:
+            agent.status = AgentStatus.PROCESSING
+            if self.on_status_changed:
+                self.on_status_changed(agent_id, AgentStatus.PROCESSING)
+        if self._permission_server:
+            self._permission_server.resolve_plan_review(plan.tool_use_id, True)
+            log.info("[%s] Plan approved", plan.agent_name)
+
+    def reject_plan(self, agent_id: UUID) -> None:
+        """Reject a pending plan (deny via hook). Feedback delivery is the caller's job."""
+        plan = self.pending_plans.pop(agent_id, None)
+        if not plan:
+            return
+        agent = self.agent_by_id(agent_id)
+        if agent:
+            agent.status = AgentStatus.PROCESSING
+            if self.on_status_changed:
+                self.on_status_changed(agent_id, AgentStatus.PROCESSING)
+        if self._permission_server:
+            self._permission_server.resolve_plan_review(plan.tool_use_id, False)
+            log.info("[%s] Plan rejected", plan.agent_name)
 
     # -- Conversation management --
 
@@ -216,9 +311,12 @@ class AppState:
         self.db.pause_polling()
 
         try:
-            # 2. Cancel active streams
+            # 2. Cancel active streams and unblock pending hooks
             for coord in self.coordinators.values():
                 coord.cancel()
+            if self._permission_server:
+                self._permission_server.resolve_all_pending()
+            self.pending_plans.clear()
 
             # 3. Wait for pending routing tasks to persist to the current conversation
             await self.router.drain()
@@ -278,6 +376,11 @@ class AppState:
                     config.status = AgentStatus.IDLE
                 service = None
 
+            hook_settings = (
+                self._permission_server.hook_settings_json
+                if self._permission_server and config.type == AgentType.CLAUDE
+                else None
+            )
             coordinator = AgentCoordinator(
                 config=config,
                 working_dir=self.directory,
@@ -286,11 +389,10 @@ class AppState:
                 other_agent_names=other_names_map[config.id],
                 session_id=session_id,
                 service=service,
+                hook_settings=hook_settings,
             )
 
-            coordinator.on_text_delta = self._relay_text_delta
-            coordinator.on_stream_complete = self._relay_stream_complete
-            coordinator.on_status_changed = self._relay_status_changed
+            self._wire_coordinator_callbacks(coordinator)
 
             self.coordinators[config.id] = coordinator
 
@@ -350,20 +452,81 @@ class AppState:
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+        if self._permission_server:
+            await self._permission_server.stop()
         for coord in self.coordinators.values():
             await coord.shutdown()
         await self.db.close()
 
     # -- Callback relays --
 
+    def _wire_coordinator_callbacks(self, coord: AgentCoordinator) -> None:
+        coord.on_text_delta = self._relay_text_delta
+        coord.on_stream_complete = self._relay_stream_complete
+        coord.on_status_changed = self._relay_status_changed
+
     def _relay_text_delta(self, agent_id: UUID, delta: str) -> None:
         if self.on_text_delta:
             self.on_text_delta(agent_id, delta)
 
     def _relay_stream_complete(self, message: Message, agent_id: UUID) -> None:
+        # Clean up pending plan if the stream ended (cancelled, errored, etc.)
+        self.pending_plans.pop(agent_id, None)
         if self.on_stream_complete:
             self.on_stream_complete(message, agent_id)
 
     def _relay_status_changed(self, agent_id: UUID, status: AgentStatus) -> None:
         if self.on_status_changed:
             self.on_status_changed(agent_id, status)
+
+    def _on_hook_question(
+        self, tool_use_id: str, questions: list[dict],
+    ) -> None:
+        """Called by the permission server when AskUserQuestion hook fires.
+
+        Surfaces the structured questions to the TUI.  The hook HTTP
+        response is blocked until the user answers (via resolve_question).
+        The answers are injected via updatedInput so Claude receives them
+        directly as the AskUserQuestion tool result.
+        """
+        agent = next(
+            (a for a in self.agents if a.type == AgentType.CLAUDE), None,
+        )
+        if not agent:
+            return
+        agent.status = AgentStatus.WAITING_FOR_USER
+        if self.on_status_changed:
+            self.on_status_changed(agent.id, AgentStatus.WAITING_FOR_USER)
+        log.info("[%s] Question intercepted (%d questions)", agent.name, len(questions))
+        if self.on_question_asked:
+            self.on_question_asked(agent.id, questions, tool_use_id)
+
+    def _on_hook_plan_review(
+        self, tool_use_id: str, plan_text: str, full_input: dict,
+    ) -> None:
+        """Called by the permission server when ExitPlanMode hook fires.
+
+        Identifies the Claude agent (only Claude uses hooks) and stores
+        the pending plan.  Runs on the asyncio event loop thread.
+        """
+        # Find the Claude agent — currently only Claude uses hooks
+        agent = next(
+            (a for a in self.agents if a.type == AgentType.CLAUDE), None,
+        )
+        if not agent:
+            log.warning("ExitPlanMode hook fired but no Claude agent found")
+            return
+
+        agent.status = AgentStatus.WAITING_FOR_USER
+        if self.on_status_changed:
+            self.on_status_changed(agent.id, AgentStatus.WAITING_FOR_USER)
+        agent_name = agent.name
+        self.pending_plans[agent.id] = PendingPlan(
+            agent_id=agent.id,
+            agent_name=agent_name,
+            tool_use_id=tool_use_id,
+            plan_text=plan_text,
+        )
+        log.info("[%s] Plan review pending: %s", agent_name, plan_text[:100])
+        if self.on_plan_review:
+            self.on_plan_review(agent.id, plan_text, tool_use_id)

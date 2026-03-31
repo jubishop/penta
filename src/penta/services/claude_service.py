@@ -9,18 +9,26 @@ log = logging.getLogger(__name__)
 
 
 class ClaudeService(CliAgentService):
-    """Claude CLI agent — thin wrapper over CliAgentService."""
+    """Claude CLI agent — thin wrapper over CliAgentService.
+
+    When a hook_settings JSON string is provided, the service uses
+    PreToolUse HTTP hooks for permission handling (enabling plan review
+    via ExitPlanMode interception).  Otherwise falls back to
+    ``--dangerously-skip-permissions``.
+    """
 
     def __init__(
         self,
         executable: str | None = None,
         model: str | None = None,
+        hook_settings: str | None = None,
     ) -> None:
         super().__init__(
             agent_name="Claude",
             executable=executable,
             model=model,
         )
+        self._hook_settings = hook_settings
         # Per-send parser state
         self._seen_session_id = False
         self._has_emitted_text = False
@@ -36,7 +44,12 @@ class ClaudeService(CliAgentService):
         system_prompt: str | None,
     ) -> list[str]:
         args = ["-p", "--verbose", "--output-format", "stream-json",
-                "--include-partial-messages", "--dangerously-skip-permissions"]
+                "--include-partial-messages"]
+
+        if self._hook_settings:
+            args += ["--settings", self._hook_settings]
+        else:
+            args.append("--dangerously-skip-permissions")
 
         if self._model:
             args += ["--model", self._model]

@@ -56,8 +56,9 @@ class StreamEvent:
 class AgentService(ABC):
     """Pure interface — test doubles inherit from this directly.
 
-    Both Claude (--dangerously-skip-permissions) and Codex (-a never)
-    auto-approve all tool use at the CLI level.
+    Claude uses ``--output-format stream-json`` with HTTP hook-based
+    permission handling for plan review and question answering.
+    Codex uses ``-a never`` to auto-approve at the CLI level.
     """
 
     @abstractmethod
@@ -74,7 +75,6 @@ class AgentService(ABC):
 
     @abstractmethod
     async def shutdown(self) -> None: ...
-
 
 class CliAgentService(AgentService):
     """Shared subprocess lifecycle for CLI-based agents.

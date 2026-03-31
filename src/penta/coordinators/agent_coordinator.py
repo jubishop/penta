@@ -33,8 +33,10 @@ class AgentCoordinator:
         other_agent_names: list[str] | None = None,
         session_id: str | None = None,
         service: AgentService | None = None,
+        hook_settings: str | None = None,
     ) -> None:
         self.config = config
+        self._hook_settings = hook_settings
         self.service: AgentService = service or self._create_service(executable)
         self.session_id = session_id
         self.full_history: list[TaggedMessage] = []
@@ -277,6 +279,7 @@ class AgentCoordinator:
             return ClaudeService(
                 executable=executable,
                 model=self.config.model,
+                hook_settings=self._hook_settings,
             )
         else:
             return CodexService(

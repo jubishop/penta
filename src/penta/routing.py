@@ -47,10 +47,15 @@ class MessageRouter:
         self.on_external_message: Callable[[str, str], None] | None = None
         self.on_external_participant_joined: Callable[[str], None] | None = None
 
-    async def send_user_message(self, text: str) -> None:
+    async def send_user_message(
+        self, text: str, routed_text: str | None = None,
+    ) -> None:
         self._conversation.append(Message(sender=MessageSender.user(), text=text))
         await self._db.append_message("User", text)
-        tagged = TaggedMessage(sender_label="User", text=text)
+        delivered = routed_text if routed_text is not None else text
+        tagged = TaggedMessage(sender_label="User", text=delivered)
+        # Extract mentions from the original text, not the interpolated version,
+        # so plan content containing @mentions can't hijack routing.
         mentioned = extract_mentions(text, self._agents)
         self.route(
             tagged, excluding=None, mentioned=mentioned,

@@ -727,3 +727,5 @@ class TestPartialTextFromCancelledStream:
         await resp3.wait_for_completion()
 
         assert "leaked partial" not in prompts[0]
+
+

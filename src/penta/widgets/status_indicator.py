@@ -40,6 +40,7 @@ class StatusIndicator(Static):
         dot_map = {
             AgentStatus.IDLE: "[green]●[/]",
             AgentStatus.PROCESSING: "[yellow]●[/]",
+            AgentStatus.WAITING_FOR_USER: "[blue]●[/]",
             AgentStatus.DISCONNECTED: "[dim]○[/]",
             AgentStatus.ERROR: "[red]✗[/]",
         }
@@ -47,10 +48,10 @@ class StatusIndicator(Static):
         return f"{self._config.name}{dot}"
 
     def watch_status(self, value: AgentStatus) -> None:
-        self.set_class(value == AgentStatus.PROCESSING, "clickable")
+        self.set_class(value.is_busy, "clickable")
 
     def on_click(self) -> None:
-        if self.status == AgentStatus.PROCESSING:
+        if self.status.is_busy:
             self.post_message(self.StopRequested(self._config.id))
 
 
