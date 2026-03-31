@@ -52,8 +52,6 @@ class AgentCoordinator:
         self.on_text_delta: Callable[[UUID, str], None] | None = None
         self.on_stream_complete: Callable[[Message, UUID], None] | None = None
         self.on_status_changed: Callable[[UUID, AgentStatus], None] | None = None
-        self.on_question_asked: Callable[[UUID, list[dict], str], None] | None = None
-        self.on_plan_review: Callable[[UUID, str, str], None] | None = None
 
     def set_other_agent_names(self, names: list[str]) -> None:
         self._other_names = names
@@ -214,34 +212,6 @@ class AgentCoordinator:
                         else:
                             response.text = event.error or "Unknown error"
                         response.is_error = True
-
-                    case StreamEventType.QUESTION:
-                        log.info(
-                            "[%s] Question asked (%d questions)",
-                            self.config.name,
-                            len(event.questions or []),
-                        )
-                        self.set_status(AgentStatus.WAITING_FOR_USER)
-                        if self.on_question_asked:
-                            self.on_question_asked(
-                                self.config.id,
-                                event.questions or [],
-                                event.control_request_id or "",
-                            )
-
-                    case StreamEventType.PLAN_REVIEW:
-                        log.info(
-                            "[%s] Plan review: %s",
-                            self.config.name,
-                            (event.plan_text or "")[:100],
-                        )
-                        self.set_status(AgentStatus.WAITING_FOR_USER)
-                        if self.on_plan_review:
-                            self.on_plan_review(
-                                self.config.id,
-                                event.plan_text or "",
-                                event.control_request_id or "",
-                            )
 
                     case StreamEventType.USAGE:
                         log.info(

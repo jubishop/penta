@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
 log = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ class PermissionServer:
         self._shutting_down = threading.Event()
         self._on_plan_review: Callable[[str, str, dict], None] | None = None
         self._on_question: Callable[[str, list[dict]], None] | None = None
-        self._server: HTTPServer | None = None
+        self._server: ThreadingHTTPServer | None = None
         self.port: int | None = None
         self._thread: threading.Thread | None = None
 
@@ -85,7 +85,7 @@ class PermissionServer:
                 pass
 
         try:
-            self._server = HTTPServer(("127.0.0.1", 0), Handler)
+            self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
             self.port = self._server.server_address[1]
         except OSError:
             log.error("Failed to bind permission server")
@@ -247,8 +247,13 @@ class PermissionServer:
             if not future.done():
                 future.set_result({})
             return await future
-        if self._on_question:
-            self._on_question(tool_use_id, questions)
+        try:
+            if self._on_question:
+                self._on_question(tool_use_id, questions)
+        except Exception:
+            log.exception("Question callback failed")
+            if not future.done():
+                future.set_result({})
         return await future
 
     async def _request_plan_review(
@@ -261,6 +266,11 @@ class PermissionServer:
             if not future.done():
                 future.set_result(True)
             return await future
-        if self._on_plan_review:
-            self._on_plan_review(tool_use_id, plan_text, full_input)
+        try:
+            if self._on_plan_review:
+                self._on_plan_review(tool_use_id, plan_text, full_input)
+        except Exception:
+            log.exception("Plan review callback failed")
+            if not future.done():
+                future.set_result(True)
         return await future

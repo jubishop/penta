@@ -37,8 +37,6 @@ class StreamEventType(Enum):
     WARNING = auto()
     ERROR = auto()
     USAGE = auto()
-    QUESTION = auto()
-    PLAN_REVIEW = auto()
     DONE = auto()
 
 
@@ -53,16 +51,13 @@ class StreamEvent:
     request_id: str | None = None
     error: str | None = None
     usage: dict | None = None
-    questions: list[dict] | None = None
-    plan_text: str | None = None
-    control_request_id: str | None = None
 
 
 class AgentService(ABC):
     """Pure interface — test doubles inherit from this directly.
 
-    Claude uses ``--input-format stream-json`` for bidirectional streaming
-    and auto-approves regular tool use via control_response.
+    Claude uses ``--output-format stream-json`` with HTTP hook-based
+    permission handling for plan review and question answering.
     Codex uses ``-a never`` to auto-approve at the CLI level.
     """
 

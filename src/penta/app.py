@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
@@ -169,17 +168,18 @@ class PentaApp(App):
         text = event.text.strip()
 
         # /approve [AgentName] — approve a pending plan
-        if text.lower().startswith("/approve"):
-            await self._handle_approve(text)
+        lower = text.lower()
+        if lower == "/approve" or lower.startswith("/approve "):
+            self._handle_approve(text)
             return
 
         # /revise [AgentName] <feedback> — reject a plan with feedback
-        if text.lower().startswith("/revise"):
+        if lower == "/revise" or lower.startswith("/revise "):
             await self._handle_revise(text)
             return
 
         # If message contains /plan and multiple plans exist, show picker
-        if re.search(r"/plan\b", text, re.IGNORECASE) and len(self._state.pending_plans) > 1:
+        if self._state._PLAN_TOKEN_RE.search(text) and len(self._state.pending_plans) > 1:
             def on_pick(agent_id: UUID | None) -> None:
                 if agent_id is not None:
                     async def _send_and_render():
@@ -292,7 +292,7 @@ class PentaApp(App):
 
     # -- Plan / Question handling --
 
-    async def _handle_approve(self, text: str) -> None:
+    def _handle_approve(self, text: str) -> None:
         """Handle /approve [AgentName]."""
         parts = text.split(maxsplit=1)
         agent_name = parts[1].strip() if len(parts) > 1 else None
@@ -319,7 +319,7 @@ class PentaApp(App):
             return
 
         # Try to parse as /revise AgentName feedback
-        candidate_name = parts[1] if len(parts) > 1 else None
+        candidate_name = parts[1]
         agent_id = self._resolve_plan_agent_by_name(candidate_name)
 
         if agent_id is not None:
@@ -402,7 +402,7 @@ class PentaApp(App):
         )
 
     def _on_plan_review(
-        self, agent_id: UUID, plan_text: str, control_request_id: str,
+        self, agent_id: UUID, plan_text: str, tool_use_id: str,
     ) -> None:
         """Show the plan as an inline message and notify the user."""
         if not self._state:

@@ -91,10 +91,10 @@ class TestPlanInterpolationNoPlan:
         await state.router.drain()
 
         codex_svc = services["Codex"]
-        if codex_svc.calls:
-            delivered = codex_svc.calls[-1].prompt
-            assert "/plan" in delivered
-            assert "## Step" not in delivered
+        assert len(codex_svc.calls) >= 1
+        delivered = codex_svc.calls[-1].prompt
+        assert "/plan" in delivered
+        assert "## Step" not in delivered
 
 
 class TestPlanInterpolationMultiplePlans:
@@ -123,10 +123,10 @@ class TestPlanInterpolationMultiplePlans:
         await state.router.drain()
 
         claude_svc = services["Claude"]
-        if claude_svc.calls:
-            delivered = claude_svc.calls[-1].prompt
-            assert "Claude's plan" not in delivered
-            assert "Codex's plan" not in delivered
+        assert len(claude_svc.calls) >= 1
+        delivered = claude_svc.calls[-1].prompt
+        assert "Claude's plan" not in delivered
+        assert "Codex's plan" not in delivered
 
     async def test_explicit_id_resolves_correct_plan(self, state_with_agents):
         state, services = state_with_agents
@@ -152,10 +152,10 @@ class TestPlanInterpolationMultiplePlans:
         await state.router.drain()
 
         claude_svc = services["Claude"]
-        if claude_svc.calls:
-            delivered = claude_svc.calls[-1].prompt
-            assert "Codex's plan text" in delivered
-            assert "Claude's plan text" not in delivered
+        assert len(claude_svc.calls) >= 1
+        delivered = claude_svc.calls[-1].prompt
+        assert "Codex's plan text" in delivered
+        assert "Claude's plan text" not in delivered
 
 
 class TestPlanApproveReject:
@@ -256,28 +256,6 @@ class TestPlanApproveReject:
         # But we can verify the plan was rejected and status was reset.
         assert claude.id not in state.pending_plans
         assert claude.status == AgentStatus.PROCESSING
-
-
-class TestPlanReviewRelay:
-    """AppState._relay_plan_review stores the plan correctly."""
-
-    async def test_relay_stores_pending_plan(self, state_with_agents):
-        state, _ = state_with_agents
-        claude = state.agent_by_name("Claude")
-
-        relayed: list[tuple] = []
-        state.on_plan_review = lambda aid, pt, crid: relayed.append((aid, pt, crid))
-
-        state._relay_plan_review(claude.id, "the plan", "cr_99")
-
-        assert claude.id in state.pending_plans
-        plan = state.pending_plans[claude.id]
-        assert plan.plan_text == "the plan"
-        assert plan.tool_use_id == "cr_99"
-        assert plan.agent_name == "Claude"
-
-        # Callback was fired
-        assert len(relayed) == 1
 
 
 class TestApproveRejectResolvesPermissionServer:

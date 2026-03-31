@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from uuid import UUID
-
-import re
 
 from penta.coordinators.agent_coordinator import AgentCoordinator
 from penta.models.agent_config import AgentConfig
@@ -460,8 +459,6 @@ class AppState:
         coord.on_text_delta = self._relay_text_delta
         coord.on_stream_complete = self._relay_stream_complete
         coord.on_status_changed = self._relay_status_changed
-        coord.on_question_asked = self._relay_question_asked
-        coord.on_plan_review = self._relay_plan_review
 
     def _relay_text_delta(self, agent_id: UUID, delta: str) -> None:
         if self.on_text_delta:
@@ -476,26 +473,6 @@ class AppState:
     def _relay_status_changed(self, agent_id: UUID, status: AgentStatus) -> None:
         if self.on_status_changed:
             self.on_status_changed(agent_id, status)
-
-    def _relay_question_asked(
-        self, agent_id: UUID, questions: list[dict], control_request_id: str,
-    ) -> None:
-        if self.on_question_asked:
-            self.on_question_asked(agent_id, questions, control_request_id)
-
-    def _relay_plan_review(
-        self, agent_id: UUID, plan_text: str, control_request_id: str,
-    ) -> None:
-        agent = self.agent_by_id(agent_id)
-        agent_name = agent.name if agent else "Agent"
-        self.pending_plans[agent_id] = PendingPlan(
-            agent_id=agent_id,
-            agent_name=agent_name,
-            tool_use_id=control_request_id,
-            plan_text=plan_text,
-        )
-        if self.on_plan_review:
-            self.on_plan_review(agent_id, plan_text, control_request_id)
 
     def _on_hook_question(
         self, tool_use_id: str, questions: list[dict],
