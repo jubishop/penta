@@ -121,15 +121,22 @@ class PermissionServer:
     def resolve_all_pending(self) -> None:
         """Resolve all pending futures so HTTP handlers can unblock.
 
-        Called when agents are cancelled or conversations switch.
         Sets _cancel_pending so late-registered futures (from coroutines
         scheduled before the cancel but not yet run) also resolve immediately.
+        The flag is cleared on the next event loop tick so it doesn't leak
+        into future turns.
         """
         self._cancel_pending = True
         for tool_use_id, future in list(self._pending.items()):
             if not future.done():
                 future.set_result(True)
         self._pending.clear()
+        # Clear on next tick — late coroutines run before this callback,
+        # so the flag won't leak into the next real request.
+        self._loop.call_soon(self._clear_cancel_pending)
+
+    def _clear_cancel_pending(self) -> None:
+        self._cancel_pending = False
 
     # -- Resolvers (called by TUI) --
 

@@ -97,6 +97,40 @@ class TestPlanInterpolationNoPlan:
         assert "## Step" not in delivered
 
 
+class TestReviseBypassesInterpolation:
+    """Revision feedback must not interpolate /plan tokens.
+
+    Regression: /revise feedback containing '/plan' would pick up another
+    agent's pending plan text and inject it into the feedback message.
+    """
+
+    async def test_revise_feedback_with_plan_token_not_interpolated(self, state_with_agents):
+        state, services = state_with_agents
+        claude = state.agent_by_name("Claude")
+        codex = state.agent_by_name("Codex")
+
+        # Codex has a pending plan
+        state.pending_plans[codex.id] = PendingPlan(
+            agent_id=codex.id,
+            agent_name="Codex",
+            tool_use_id="cr_codex",
+            plan_text="Codex's secret plan",
+        )
+
+        # Route revision feedback directly (as _handle_revise does)
+        await state.router.send_user_message(
+            "@Claude Please revise your plan: use /plan from the old approach"
+        )
+        await state.router.drain()
+
+        claude_svc = services["Claude"]
+        assert len(claude_svc.calls) >= 1
+        delivered = claude_svc.calls[-1].prompt
+        # The literal /plan should pass through, NOT interpolate Codex's plan
+        assert "/plan" in delivered
+        assert "Codex's secret plan" not in delivered
+
+
 class TestPlanInterpolationMultiplePlans:
     """When multiple plans exist and no explicit ID, no interpolation happens."""
 

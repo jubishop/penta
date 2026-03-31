@@ -345,8 +345,9 @@ class PentaApp(App):
         agent = self._state.agent_by_id(agent_id)
         agent_name = agent.name if agent else "Agent"
         self._state.reject_plan(agent_id)
-        # Send revision feedback to the agent so it sees why the plan was rejected
-        await self._state.send_user_message(f"@{agent_name} Please revise your plan: {feedback}")
+        # Route feedback directly — bypass /plan interpolation so "/plan"
+        # in user feedback doesn't accidentally inject another agent's plan.
+        await self._state.router.send_user_message(f"@{agent_name} Please revise your plan: {feedback}")
         self._render_new_messages()
 
     def _resolve_plan_agent(self, agent_name: str | None) -> UUID | None:
@@ -392,11 +393,14 @@ class PentaApp(App):
         agent_name = agent.name if agent else "Agent"
 
         def on_answers(answers: dict[str, str] | None) -> None:
-            if not self._state or not self._state._permission_server:
+            if not self._state:
                 return
             if answers is None:
-                # User dismissed — provide empty answers so Claude can continue
-                answers = {q.get("question", ""): "" for q in questions}
+                # User cancelled — cancel the agent's stream
+                self._state.cancel_agent(agent_id)
+                return
+            if not self._state._permission_server:
+                return
             self._state._permission_server.resolve_question(tool_use_id, answers)
             # Resume processing status
             coord = self._state.coordinators.get(agent_id)

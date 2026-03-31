@@ -284,3 +284,46 @@ class TestResolveAllPending:
         # it should detect non-dict and return bare allow
         answers = future.result()
         assert not isinstance(answers, dict)
+
+    async def test_cancel_pending_flag_cleared_on_next_tick(self, server):
+        """_cancel_pending must not leak into the next real request.
+
+        Regression: without call_soon cleanup, resolve_all_pending sets
+        a sticky flag that auto-approves the NEXT plan/question.
+        """
+        server.resolve_all_pending()
+        assert server._cancel_pending is True
+
+        # Yield to event loop — call_soon callback should clear the flag
+        await asyncio.sleep(0)
+
+        assert server._cancel_pending is False
+
+    async def test_next_plan_review_after_cancel_is_not_auto_approved(self, server):
+        """After cancel, the next real plan review must pause for user input.
+
+        Regression: sticky _cancel_pending auto-approved the next real
+        ExitPlanMode without user interaction.
+        """
+        # Cancel (sets flag, schedules clear)
+        server.resolve_all_pending()
+        # Yield so the clear callback runs
+        await asyncio.sleep(0)
+
+        # Now a real plan review should block (not auto-approve)
+        reviews = []
+
+        def on_review(tid, pt, fi):
+            reviews.append(tid)
+            server.resolve_plan_review(tid, True)
+
+        server.set_plan_review_callback(on_review)
+
+        resp = await asyncio.get_running_loop().run_in_executor(
+            None, _post, server.port,
+            {"tool_name": "ExitPlanMode", "tool_input": {"plan": "real plan"}, "tool_use_id": "tu_real"},
+        )
+
+        # The callback must have been called (not bypassed by stale flag)
+        assert len(reviews) == 1
+        assert resp["hookSpecificOutput"]["permissionDecision"] == "allow"
