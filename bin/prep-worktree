@@ -8,10 +8,6 @@ set -eo pipefail
 WORKTREE_PATH="${1:-$(pwd)}"
 WORKTREE_PATH="$(cd "$WORKTREE_PATH" && pwd)"
 
-if [ -d "$WORKTREE_PATH/.venv" ]; then
-  exit 0
-fi
-
 BUILD_LOG="/tmp/prep-worktree-$(basename "$WORKTREE_PATH").log"
 
 (
@@ -19,7 +15,9 @@ BUILD_LOG="/tmp/prep-worktree-$(basename "$WORKTREE_PATH").log"
   # macOS: .claude/ has the UF_HIDDEN flag, which new files inherit.
   # Python 3.14 skips hidden .pth files, breaking editable installs.
   chflags -R nohidden "$WORKTREE_PATH" 2>/dev/null || true &&
-  python3 -m venv --upgrade-deps .venv &&
+  if [ ! -d "$WORKTREE_PATH/.venv" ]; then
+    python3 -m venv --upgrade-deps .venv
+  fi &&
   .venv/bin/pip install -q -e ".[dev]"
 ) > "$BUILD_LOG" 2>&1 </dev/null &
 disown 2>/dev/null || true
