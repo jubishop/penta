@@ -140,6 +140,13 @@ class PentaApp(App):
         if trimmed:
             self._messages.rendered_up_to = len(state.conversation)
 
+        # Warn if permission server failed (plan review/questions disabled)
+        if state._permission_server is None:
+            self.notify(
+                "Permission server unavailable — plans and questions will be auto-approved",
+                severity="warning",
+            )
+
         # Update title with conversation name
         self._update_title()
 
@@ -337,7 +344,7 @@ class PentaApp(App):
 
         agent = self._state.agent_by_id(agent_id)
         agent_name = agent.name if agent else "Agent"
-        self._state.reject_plan(agent_id, feedback)
+        self._state.reject_plan(agent_id)
         # Send revision feedback to the agent so it sees why the plan was rejected
         await self._state.send_user_message(f"@{agent_name} Please revise your plan: {feedback}")
         self._render_new_messages()
@@ -355,7 +362,7 @@ class PentaApp(App):
             return agent_id
         if len(plans) == 1:
             return next(iter(plans))
-        # Multiple plans — show picker
+        # Multiple plans — prompt user to specify agent name
         self.notify(
             "Multiple plans pending. Specify an agent name, e.g. /approve Claude",
             severity="warning",

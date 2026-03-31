@@ -156,7 +156,8 @@ class AppState:
         if coord and coord.config.status.is_busy:
             coord.cancel()
             self.pending_plans.pop(agent_id, None)
-            if self._permission_server:
+            # Only resolve hooks for agents that use them (Claude)
+            if self._permission_server and coord.config.type == AgentType.CLAUDE:
                 self._permission_server.resolve_all_pending()
             return True
         return False
@@ -164,12 +165,15 @@ class AppState:
     def cancel_all_busy(self) -> int:
         """Cancel all busy agents (streaming or waiting for user). Returns count cancelled."""
         count = 0
+        claude_cancelled = False
         for coord in self.coordinators.values():
             if coord.config.status.is_busy:
                 coord.cancel()
                 self.pending_plans.pop(coord.config.id, None)
+                if coord.config.type == AgentType.CLAUDE:
+                    claude_cancelled = True
                 count += 1
-        if count and self._permission_server:
+        if claude_cancelled and self._permission_server:
             self._permission_server.resolve_all_pending()
         return count
 
@@ -232,7 +236,8 @@ class AppState:
             self._permission_server.resolve_plan_review(plan.tool_use_id, True)
             log.info("[%s] Plan approved", plan.agent_name)
 
-    def reject_plan(self, agent_id: UUID, feedback: str) -> None:
+    def reject_plan(self, agent_id: UUID) -> None:
+        """Reject a pending plan (deny via hook). Feedback delivery is the caller's job."""
         plan = self.pending_plans.pop(agent_id, None)
         if not plan:
             return
@@ -243,7 +248,7 @@ class AppState:
                 self.on_status_changed(agent_id, AgentStatus.PROCESSING)
         if self._permission_server:
             self._permission_server.resolve_plan_review(plan.tool_use_id, False)
-            log.info("[%s] Plan rejected: %s", plan.agent_name, feedback)
+            log.info("[%s] Plan rejected", plan.agent_name)
 
     # -- Conversation management --
 

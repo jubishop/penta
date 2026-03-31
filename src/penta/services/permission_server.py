@@ -29,6 +29,7 @@ class PermissionServer:
         self._loop = loop
         self._pending: dict[str, asyncio.Future] = {}
         self._shutting_down = threading.Event()
+        self._cancel_pending = False
         self._on_plan_review: Callable[[str, str, dict], None] | None = None
         self._on_question: Callable[[str, list[dict]], None] | None = None
         self._server: ThreadingHTTPServer | None = None
@@ -121,9 +122,10 @@ class PermissionServer:
         """Resolve all pending futures so HTTP handlers can unblock.
 
         Called when agents are cancelled or conversations switch.
-        Plans are auto-approved; question handlers detect the non-dict
-        result and return a bare allow.
+        Sets _cancel_pending so late-registered futures (from coroutines
+        scheduled before the cancel but not yet run) also resolve immediately.
         """
+        self._cancel_pending = True
         for tool_use_id, future in list(self._pending.items()):
             if not future.done():
                 future.set_result(True)
@@ -242,8 +244,9 @@ class PermissionServer:
     ) -> dict[str, str]:
         future = self._loop.create_future()
         self._pending[tool_use_id] = future
-        # Check after registering: stop() may have already run.
-        if self._shutting_down.is_set():
+        # Check after registering: stop() or resolve_all_pending() may have run.
+        if self._shutting_down.is_set() or self._cancel_pending:
+            self._cancel_pending = False
             if not future.done():
                 future.set_result({})
             return await future
@@ -261,8 +264,9 @@ class PermissionServer:
     ) -> bool:
         future = self._loop.create_future()
         self._pending[tool_use_id] = future
-        # Check after registering: stop() may have already run.
-        if self._shutting_down.is_set():
+        # Check after registering: stop() or resolve_all_pending() may have run.
+        if self._shutting_down.is_set() or self._cancel_pending:
+            self._cancel_pending = False
             if not future.done():
                 future.set_result(True)
             return await future

@@ -189,7 +189,7 @@ class TestPlanApproveReject:
         )
 
         assert claude.id in state.pending_plans
-        state.reject_plan(claude.id, "needs work")
+        state.reject_plan(claude.id)
         assert claude.id not in state.pending_plans
 
     async def test_approve_nonexistent_plan_is_noop(self, state_with_agents):
@@ -233,12 +233,8 @@ class TestPlanApproveReject:
         state.cancel_agent(claude.id)
         assert claude.id not in state.pending_plans
 
-    async def test_reject_sends_feedback_as_message(self, state_with_agents):
-        """Rejecting a plan must send the feedback text to the agent.
-
-        Regression: without this, /revise <feedback> discards the feedback
-        and Claude only sees a bare deny with no guidance for revision.
-        """
+    async def test_reject_clears_plan_and_resets_status(self, state_with_agents):
+        """reject_plan removes the plan and resets status to PROCESSING."""
         state, services = state_with_agents
         claude = state.agent_by_name("Claude")
 
@@ -250,10 +246,8 @@ class TestPlanApproveReject:
         )
         claude.status = AgentStatus.WAITING_FOR_USER
 
-        state.reject_plan(claude.id, "use a different approach")
+        state.reject_plan(claude.id)
 
-        # The reject itself doesn't send the message — the app layer does.
-        # But we can verify the plan was rejected and status was reset.
         assert claude.id not in state.pending_plans
         assert claude.status == AgentStatus.PROCESSING
 
@@ -312,7 +306,7 @@ class TestApproveRejectResolvesPermissionServer:
                 plan_text="test plan",
             )
 
-            state.reject_plan(claude.id, "needs work")
+            state.reject_plan(claude.id)
             assert future.done()
             assert future.result() is False
         finally:
@@ -421,6 +415,6 @@ class TestWaitingForUserStatus:
         statuses: list[AgentStatus] = []
         state.on_status_changed = lambda aid, s: statuses.append(s)
 
-        state.reject_plan(claude.id, "revise this")
+        state.reject_plan(claude.id)
         assert claude.status == AgentStatus.PROCESSING
         assert AgentStatus.PROCESSING in statuses

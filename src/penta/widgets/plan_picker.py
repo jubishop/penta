@@ -55,8 +55,6 @@ class PlanPickerScreen(ModalScreen[UUID | None]):
 
     def __init__(self, plans: dict[UUID, PendingPlan], **kwargs) -> None:
         super().__init__(**kwargs)
-        self._plans = plans
-        # Ordered list for index-based lookup
         self._plan_list = list(plans.values())
 
     def compose(self) -> ComposeResult:

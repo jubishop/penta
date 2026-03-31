@@ -80,17 +80,13 @@ class TestExitPlanModeReview:
 
     async def test_approve_plan(self, server):
         reviews = []
-        server.set_plan_review_callback(
-            lambda tid, pt, fi: reviews.append((tid, pt))
-        )
 
-        async def approve_after_delay():
-            await asyncio.sleep(0.1)
-            server.resolve_plan_review("tu_plan", True)
+        def on_review(tid, pt, fi):
+            reviews.append((tid, pt))
+            server.resolve_plan_review(tid, True)
 
-        asyncio.create_task(approve_after_delay())
+        server.set_plan_review_callback(on_review)
 
-        # This blocks until resolved
         resp = await asyncio.get_running_loop().run_in_executor(
             None, _post, server.port,
             {"tool_name": "ExitPlanMode", "tool_input": {"plan": "step 1"}, "tool_use_id": "tu_plan"},
@@ -101,13 +97,10 @@ class TestExitPlanModeReview:
         assert reviews[0] == ("tu_plan", "step 1")
 
     async def test_reject_plan(self, server):
-        server.set_plan_review_callback(lambda tid, pt, fi: None)
+        def on_review(tid, pt, fi):
+            server.resolve_plan_review(tid, False)
 
-        async def reject_after_delay():
-            await asyncio.sleep(0.1)
-            server.resolve_plan_review("tu_plan2", False)
-
-        asyncio.create_task(reject_after_delay())
+        server.set_plan_review_callback(on_review)
 
         resp = await asyncio.get_running_loop().run_in_executor(
             None, _post, server.port,
@@ -130,8 +123,6 @@ class TestAskUserQuestionAnswerInjection:
     """
 
     async def test_answers_injected_via_updated_input(self, server):
-        server.set_question_callback(lambda tid, qs: None)
-
         questions = [
             {
                 "question": "What color?",
@@ -144,11 +135,10 @@ class TestAskUserQuestionAnswerInjection:
             }
         ]
 
-        async def answer_after_delay():
-            await asyncio.sleep(0.1)
-            server.resolve_question("tu_q1", {"What color?": "Red"})
+        def on_question(tid, qs):
+            server.resolve_question(tid, {"What color?": "Red"})
 
-        asyncio.create_task(answer_after_delay())
+        server.set_question_callback(on_question)
 
         resp = await asyncio.get_running_loop().run_in_executor(
             None, _post, server.port,
@@ -167,17 +157,17 @@ class TestAskUserQuestionAnswerInjection:
 
     async def test_callback_receives_questions(self, server):
         received = []
-        server.set_question_callback(
-            lambda tid, qs: received.append((tid, qs))
-        )
+
+        def on_question(tid, qs):
+            received.append((tid, qs))
+            # Resolve on next event loop tick so callback assertion works
+            asyncio.get_running_loop().call_soon(
+                server.resolve_question, tid, {"Pick one": "A"},
+            )
+
+        server.set_question_callback(on_question)
 
         questions = [{"question": "Pick one", "options": [{"label": "A"}]}]
-
-        async def answer_after_delay():
-            await asyncio.sleep(0.1)
-            server.resolve_question("tu_q2", {"Pick one": "A"})
-
-        asyncio.create_task(answer_after_delay())
 
         await asyncio.get_running_loop().run_in_executor(
             None, _post, server.port,
@@ -191,15 +181,13 @@ class TestAskUserQuestionAnswerInjection:
     async def test_no_extra_keys_in_updated_input(self, server):
         """updatedInput must NOT contain extra keys — they corrupt the
         AskUserQuestion schema (discovered via GitHub issue #29530)."""
-        server.set_question_callback(lambda tid, qs: None)
+
+        def on_question(tid, qs):
+            server.resolve_question(tid, {"Q?": "Y"})
+
+        server.set_question_callback(on_question)
 
         questions = [{"question": "Q?", "options": [{"label": "Y"}]}]
-
-        async def answer():
-            await asyncio.sleep(0.1)
-            server.resolve_question("tu_q3", {"Q?": "Y"})
-
-        asyncio.create_task(answer())
 
         resp = await asyncio.get_running_loop().run_in_executor(
             None, _post, server.port,
