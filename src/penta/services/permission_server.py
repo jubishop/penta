@@ -204,9 +204,11 @@ class PermissionServer:
             # Resolved by shutdown/cancel — allow without injecting answers
             return json.dumps({"hookSpecificOutput": {"permissionDecision": "allow"}})
 
-        # Build updatedInput with the user's answers
-        updated = dict(tool_input)
-        updated["answers"] = answers
+        # Build updatedInput with only questions + answers (strict schema)
+        updated = {
+            "questions": tool_input.get("questions", []) if isinstance(tool_input, dict) else [],
+            "answers": answers,
+        }
 
         log.info("AskUserQuestion — answers provided: %s", answers)
         return json.dumps({
@@ -248,14 +250,15 @@ class PermissionServer:
 
     async def _request_answers(
         self, tool_use_id: str, questions: list[dict],
-    ) -> dict[str, str]:
+    ) -> dict[str, str] | None:
         future = self._loop.create_future()
         self._pending[tool_use_id] = future
         # Check after registering: stop() or resolve_all_pending() may have run.
+        # Use None (not {}) so _handle_question's isinstance check catches it.
         if self._shutting_down.is_set() or self._cancel_pending:
             self._cancel_pending = False
             if not future.done():
-                future.set_result({})
+                future.set_result(None)
             return await future
         try:
             if self._on_question:
@@ -263,7 +266,7 @@ class PermissionServer:
         except Exception:
             log.exception("Question callback failed")
             if not future.done():
-                future.set_result({})
+                future.set_result(None)
         return await future
 
     async def _request_plan_review(
