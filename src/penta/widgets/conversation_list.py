@@ -7,6 +7,7 @@ from rich.markup import escape as rich_escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
@@ -36,13 +37,16 @@ class ConversationItem(ListItem):
         self.is_current = is_current
 
     def compose(self) -> ComposeResult:
+        yield Static(self._render_label(), classes="conversation-item-text")
+
+    def refresh_label(self) -> None:
+        self.query_one(".conversation-item-text", Static).update(self._render_label())
+
+    def _render_label(self) -> str:
         marker = " *" if self.is_current else ""
         updated = self.info.updated_at.astimezone().strftime("%Y-%m-%d %H:%M")
         safe_title = rich_escape(self.info.title)
-        yield Static(
-            f"{safe_title}{marker}  [dim]{updated}[/]",
-            classes="conversation-item-text",
-        )
+        return f"{safe_title}{marker}  [dim]{updated}[/]"
 
 
 class RenameScreen(ModalScreen[str | None]):
@@ -55,7 +59,7 @@ class RenameScreen(ModalScreen[str | None]):
     #rename-container {
         width: 50;
         height: auto;
-        max-height: 7;
+        max-height: 10;
         border: thick $accent;
         background: $surface;
         padding: 1 2;
@@ -93,6 +97,14 @@ class RenameScreen(ModalScreen[str | None]):
 class ConversationListScreen(ModalScreen[ConversationListResult | None]):
     """Modal for browsing and managing conversations."""
 
+    class RenameRequested(Message):
+        """Posted when a conversation is renamed so the app can persist it."""
+
+        def __init__(self, conversation_id: int, title: str) -> None:
+            super().__init__()
+            self.conversation_id = conversation_id
+            self.title = title
+
     DEFAULT_CSS = """
     ConversationListScreen {
         align: center middle;
@@ -123,7 +135,6 @@ class ConversationListScreen(ModalScreen[ConversationListResult | None]):
 
     BINDINGS = [
         Binding("escape", "dismiss_modal", "Close", show=False),
-        Binding("enter", "select", "Switch", show=True),
         Binding("n", "new", "New", show=True),
         Binding("d", "delete", "Delete", show=True),
         Binding("r", "rename", "Rename", show=True),
@@ -161,14 +172,16 @@ class ConversationListScreen(ModalScreen[ConversationListResult | None]):
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
 
-    def action_select(self) -> None:
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = self._selected_item()
-        if item:
-            self.dismiss(ConversationListResult(
-                action=ConversationAction.SWITCH,
-                conversation_id=item.info.id,
-                title=item.info.title,
-            ))
+        if not item or item.is_current:
+            self.dismiss(None)
+            return
+        self.dismiss(ConversationListResult(
+            action=ConversationAction.SWITCH,
+            conversation_id=item.info.id,
+            title=item.info.title,
+        ))
 
     def action_new(self) -> None:
         self.dismiss(ConversationListResult(action=ConversationAction.NEW))
@@ -191,11 +204,10 @@ class ConversationListScreen(ModalScreen[ConversationListResult | None]):
             return
 
         def on_rename(new_title: str | None) -> None:
-            if new_title:
-                self.dismiss(ConversationListResult(
-                    action=ConversationAction.RENAME,
-                    conversation_id=item.info.id,
-                    title=new_title,
-                ))
+            if not new_title:
+                return
+            item.info.title = new_title
+            item.refresh_label()
+            self.post_message(self.RenameRequested(item.info.id, new_title))
 
         self.app.push_screen(RenameScreen(item.info.title), callback=on_rename)
