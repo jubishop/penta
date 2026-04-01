@@ -32,7 +32,7 @@ def _use_tmp_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-async def app_state(project_dir: Path, tmp_path: Path, _use_tmp_storage) -> AppState:
+async def app_state(project_dir: Path, tmp_path: Path, _use_tmp_storage):
     """An AppState backed by the same project directory as the MCP server."""
     state = AppState(project_dir, storage_root=tmp_path)
     await state.connect()

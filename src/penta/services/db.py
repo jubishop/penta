@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 
 class PentaDB:
-    MAX_MESSAGES = 2000
+    MAX_MESSAGES: int = 2000
 
     def __init__(
         self,
@@ -61,6 +61,7 @@ class PentaDB:
         if self._in_memory:
             self._conn = await aiosqlite.connect(":memory:")
         else:
+            assert self._db_path is not None
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = await aiosqlite.connect(self._db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
@@ -68,7 +69,9 @@ class PentaDB:
         await self._db.execute("PRAGMA foreign_keys=ON")
 
         cur = await self._db.execute("PRAGMA user_version")
-        version = (await cur.fetchone())[0]
+        row = await cur.fetchone()
+        assert row is not None
+        version = row[0]
 
         if version == 0:
             # Check if this is a pre-migration DB (has old messages table)
@@ -76,7 +79,9 @@ class PentaDB:
                 "SELECT COUNT(*) FROM sqlite_master "
                 "WHERE type='table' AND name='messages'"
             )
-            is_existing_db = (await cur.fetchone())[0] > 0
+            count_row = await cur.fetchone()
+            assert count_row is not None
+            is_existing_db = count_row[0] > 0
 
             if is_existing_db:
                 # Pre-migration DB — run migrations to upgrade schema
@@ -116,21 +121,25 @@ class PentaDB:
             (title, now, now),
         )
         await self._db.commit()
-        return cur.lastrowid
+        rowid = cur.lastrowid
+        assert rowid is not None
+        return rowid
 
-    async def list_conversations(self) -> list[tuple[int, str, str, str]]:
-        """Returns (id, title, created_at, updated_at) tuples, most recently updated first."""
+    async def list_conversations(self) -> list:
+        """Returns (id, title, created_at, updated_at) rows, most recently updated first."""
         cur = await self._db.execute(
             "SELECT id, title, created_at, updated_at FROM conversations "
             "ORDER BY updated_at DESC"
         )
-        return await cur.fetchall()
+        return list(await cur.fetchall())
 
     async def _conversation_exists(self, conversation_id: int) -> bool:
         cur = await self._db.execute(
             "SELECT COUNT(*) FROM conversations WHERE id = ?", (conversation_id,)
         )
-        return (await cur.fetchone())[0] > 0
+        row = await cur.fetchone()
+        assert row is not None
+        return row[0] > 0
 
     async def delete_conversation(self, conversation_id: int) -> None:
         if not await self._conversation_exists(conversation_id):
@@ -160,7 +169,9 @@ class PentaDB:
         cur = await self._db.execute(
             "SELECT COUNT(*) FROM conversations WHERE id = ?", (conversation_id,)
         )
-        if (await cur.fetchone())[0] == 0:
+        row = await cur.fetchone()
+        assert row is not None
+        if row[0] == 0:
             raise ValueError(f"Conversation {conversation_id} does not exist")
         self._conversation_id = conversation_id
         self._local_ids.clear()
@@ -180,21 +191,23 @@ class PentaDB:
             (now, self._conversation_id),
         )
         await self._db.commit()
-        self._local_ids.add(cur.lastrowid)
-        return cur.lastrowid
+        rowid = cur.lastrowid
+        assert rowid is not None
+        self._local_ids.add(rowid)
+        return rowid
 
-    async def get_messages(self, limit: int = 2000) -> list[tuple[int, str, str, str]]:
-        """Returns (id, sender, text, timestamp) tuples, oldest first."""
+    async def get_messages(self, limit: int = 2000) -> list:
+        """Returns (id, sender, text, timestamp) rows, oldest first."""
         cur = await self._db.execute(
             "SELECT id, sender, text, timestamp FROM messages "
             "WHERE conversation_id = ? "
             "ORDER BY id DESC LIMIT ?",
             (self._conversation_id, limit),
         )
-        rows = await cur.fetchall()
+        rows = list(await cur.fetchall())
         return rows[::-1]
 
-    async def check_external_changes(self) -> list[tuple[int, str, str, str]]:
+    async def check_external_changes(self) -> list:
         """Returns new rows written by other connections since last check."""
         dv = await self._get_data_version()
         if dv == self._last_data_version:
@@ -205,7 +218,7 @@ class PentaDB:
             "WHERE conversation_id = ? AND id > ? ORDER BY id",
             (self._conversation_id, self._last_seen_id),
         )
-        rows = await cur.fetchall()
+        rows = list(await cur.fetchall())
         if rows:
             self._last_seen_id = rows[-1][0]
         # Filter out rows we wrote locally; clean up stale tracked IDs
@@ -289,6 +302,7 @@ class PentaDB:
     async def _get_data_version(self) -> int:
         cur = await self._db.execute("PRAGMA data_version")
         row = await cur.fetchone()
+        assert row is not None
         return row[0]
 
     async def _get_max_id(self) -> int:
@@ -297,4 +311,5 @@ class PentaDB:
             (self._conversation_id,),
         )
         row = await cur.fetchone()
+        assert row is not None
         return row[0] or 0

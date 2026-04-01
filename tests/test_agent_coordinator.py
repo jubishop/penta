@@ -135,6 +135,7 @@ class TestCancelledStreamIsNotTreatedAsSuccess:
         assert response.is_streaming is False
 
         # Clean up second task.
+        assert coordinator._current_task is not None
         coordinator._current_task.cancel()
         await asyncio.sleep(0)
 
@@ -166,6 +167,7 @@ class TestCancelledStreamIsNotTreatedAsSuccess:
         ]
         assert agent_replies == []
 
+        assert coordinator._current_task is not None
         coordinator._current_task.cancel()
         await asyncio.sleep(0)
 
@@ -193,6 +195,7 @@ class TestCancelledStreamIsNotTreatedAsSuccess:
         assert len(completed) == 1, "on_stream_complete must fire so the UI can clear streaming state"
         assert completed[0].is_cancelled is True
 
+        assert coordinator._current_task is not None
         coordinator._current_task.cancel()
         await asyncio.sleep(0)
 
@@ -216,6 +219,7 @@ class TestCancelledStreamRollsBackPromptIndex:
         user_msg = TaggedMessage(sender_label="User", text="plan a trip")
         resp0 = coordinator.send(user_msg, conversation)
         await _let_task_start()
+        assert coordinator._current_task is not None
         coordinator._current_task.cancel()
         await resp0.wait_for_completion()
         # Manually advance as if the stream finished (normal completion path).
@@ -238,6 +242,7 @@ class TestCancelledStreamRollsBackPromptIndex:
 
         # Verify: build a third prompt and confirm Codex's message
         # is NOT in the catch-up (meaning it WAS included in the second prompt).
+        assert coordinator._current_task is not None
         coordinator._current_task.cancel()
         await asyncio.sleep(0)
         coordinator.last_prompted_index = len(coordinator.full_history)
@@ -296,6 +301,7 @@ class TestCancelledStreamRollsBackPromptIndex:
         )
         assert "Other here" in replacement_prompt
 
+        assert coordinator._current_task is not None
         coordinator._current_task.cancel()
         await asyncio.sleep(0)
 
@@ -356,6 +362,7 @@ class TestSendWhileStreamingWaitsForCleanup:
         assert resp2.text == "partial"  # second stream started successfully
 
         # Cleanup.
+        assert coord._current_task is not None
         coord._current_task.cancel()
         await asyncio.sleep(0)
 

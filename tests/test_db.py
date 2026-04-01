@@ -82,7 +82,7 @@ class TestSessions:
 
 
 @pytest.fixture
-async def file_db(tmp_path: Path) -> PentaDB:
+async def file_db(tmp_path: Path):
     db = PentaDB(tmp_path / "test-project", storage_root=tmp_path)
     await db.connect()
     yield db
@@ -100,6 +100,7 @@ class TestExternalChanges:
     async def test_external_write_detected(self, file_db: PentaDB):
         # Simulate an external write via a second connection
         await file_db.append_message("User", "setup")  # Establish baseline
+        assert file_db._db_path is not None
         ext_conn = sqlite3.connect(file_db._db_path)
         ext_conn.execute("PRAGMA journal_mode=WAL")
         ext_conn.execute(
@@ -116,6 +117,7 @@ class TestExternalChanges:
 
     async def test_external_changes_only_returns_new(self, file_db: PentaDB):
         await file_db.append_message("User", "setup")
+        assert file_db._db_path is not None
         ext_conn = sqlite3.connect(file_db._db_path)
         ext_conn.execute("PRAGMA journal_mode=WAL")
         ext_conn.execute(
