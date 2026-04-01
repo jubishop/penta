@@ -100,7 +100,9 @@ class TestMessageScoping:
         cur = await memory_db._db.execute(
             "SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (cid,)
         )
-        assert (await cur.fetchone())[0] == 0
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == 0
 
 
 class TestSessionScoping:
@@ -135,7 +137,9 @@ class TestSessionScoping:
         cur = await memory_db._db.execute(
             "SELECT COUNT(*) FROM sessions WHERE conversation_id = ?", (cid,)
         )
-        assert (await cur.fetchone())[0] == 0
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +370,7 @@ class TestMigration:
 
         # Verify messages are preserved with conversation_id = 1
         cur = await conn.execute("SELECT conversation_id, sender, text FROM messages")
-        rows = await cur.fetchall()
+        rows = list(await cur.fetchall())
         assert len(rows) == 1
         assert rows[0] == (1, "User", "old message")
 
@@ -388,7 +392,7 @@ class TestMigration:
         cur = await conn.execute(
             "SELECT agent_name, conversation_id, session_id FROM sessions"
         )
-        rows = await cur.fetchall()
+        rows = list(await cur.fetchall())
         assert len(rows) == 1
         assert rows[0] == ("Claude", 1, "old-session")
 
@@ -407,7 +411,7 @@ class TestMigration:
         await run_migrations(conn)
 
         cur = await conn.execute("SELECT id, title FROM conversations")
-        rows = await cur.fetchall()
+        rows = list(await cur.fetchall())
         assert len(rows) == 1
         assert rows[0] == (1, "Default")
 
@@ -426,7 +430,9 @@ class TestMigration:
         await run_migrations(conn)
 
         cur = await conn.execute("PRAGMA user_version")
-        version = (await cur.fetchone())[0]
+        row = await cur.fetchone()
+        assert row is not None
+        version = row[0]
         assert version == SCHEMA_VERSION
 
         await conn.close()
@@ -434,7 +440,9 @@ class TestMigration:
     async def test_fresh_db_sets_user_version(self, memory_db: PentaDB):
         """A fresh DB (via memory_db fixture) should have the current schema version."""
         cur = await memory_db._db.execute("PRAGMA user_version")
-        version = (await cur.fetchone())[0]
+        row = await cur.fetchone()
+        assert row is not None
+        version = row[0]
         assert version == SCHEMA_VERSION
 
     async def test_migration_rerun_after_partial_sessions_drop(self, tmp_path: Path):
@@ -500,14 +508,16 @@ class TestMigration:
             ("Claude", 1, "test-session"),
         )
         cur = await conn.execute("SELECT * FROM sessions")
-        rows = await cur.fetchall()
+        rows = list(await cur.fetchall())
         assert len(rows) == 1
 
         # Verify sessions_new is gone
         cur = await conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions_new'"
         )
-        assert (await cur.fetchone())[0] == 0
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == 0
 
         await conn.close()
 
