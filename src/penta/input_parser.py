@@ -13,9 +13,6 @@ def extract_mentions(text: str, agents: list[AgentConfig]) -> set[UUID]:
     stripped = re.sub(r"```[\s\S]*?```", "", lower)
     stripped = re.sub(r"`[^`]+`", "", stripped)
 
-    if re.search(r"(?<!\w)@all\b", stripped) or re.search(r"(?<!\w)@everyone\b", stripped):
-        return {a.id for a in agents}
-
     mentioned: set[UUID] = set()
     for agent in agents:
         name_lower = agent.name.lower()

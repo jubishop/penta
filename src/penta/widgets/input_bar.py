@@ -93,13 +93,28 @@ class InputBar(Vertical):
         ta.focus()
 
     def set_agents(self, agents: list[AgentConfig]) -> None:
-        """Populate agent toggle pills above the input."""
-        toggles = [AgentToggle(agent) for agent in agents]
-        container = Horizontal(*toggles, id="agent-toggles")
-        self.mount(container, before="#input-row")
+        """Populate agent toggle pills above the input (idempotent)."""
+        results = self.query("#agent-toggles")
+        if results:
+            container = results.first()
+            container.remove_children()
+        else:
+            container = Horizontal(id="agent-toggles")
+            self.mount(container, before="#input-row")
+        for agent in agents:
+            container.mount(AgentToggle(agent))
 
     def _active_toggles(self) -> list[AgentToggle]:
         return [t for t in self.query(AgentToggle) if t.active]
+
+    def save_toggle_state(self) -> set[str]:
+        """Return names of currently active toggles."""
+        return {t.agent_name for t in self._active_toggles()}
+
+    def restore_toggle_state(self, active_names: set[str]) -> None:
+        """Restore toggle state from a set of agent names."""
+        for toggle in self.query(AgentToggle):
+            toggle.active = toggle.agent_name in active_names
 
     def action_submit(self) -> None:
         self._submit()
@@ -114,9 +129,9 @@ class InputBar(Vertical):
         if not text:
             return
 
-        # Auto-prepend active agent mentions if not already present
+        # Don't prepend mentions to slash commands — they have their own targeting
         active = self._active_toggles()
-        if active:
+        if active and not text.startswith("/"):
             text_lower = text.lower()
             stripped = re.sub(r"```[\s\S]*?```", "", text_lower)
             stripped = re.sub(r"`[^`]+`", "", stripped)

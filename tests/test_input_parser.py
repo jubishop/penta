@@ -29,20 +29,6 @@ class TestExtractMentions:
         assert extract_mentions("hey codex help", agents) == set()
         assert extract_mentions("claude and codex debate this", agents) == set()
 
-    def test_at_all(self):
-        agents = _agents()
-        result = extract_mentions("@all what do you think?", agents)
-        assert result == {agents[0].id, agents[1].id}
-
-    def test_at_everyone(self):
-        agents = _agents()
-        result = extract_mentions("@everyone hello", agents)
-        assert result == {agents[0].id, agents[1].id}
-
-    def test_bare_all_does_not_match(self):
-        agents = _agents()
-        assert extract_mentions("all", agents) == set()
-
     def test_no_mention(self):
         agents = _agents()
         assert extract_mentions("just a normal message", agents) == set()

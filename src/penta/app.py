@@ -85,6 +85,7 @@ class PentaApp(App):
         self._status_indicators: dict[UUID, StatusIndicator] = {}
         self._poll_task: asyncio.Task | None = None
         self._switching: bool = False
+        self._toggle_state: dict[int, set[str]] = {}  # conversation_id -> active agent names
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="header-bar"):
@@ -219,6 +220,7 @@ class PentaApp(App):
             return
         self._switching = True
         try:
+            self._save_toggle_state()
             title = f"Chat {datetime.now():%Y-%m-%d %H:%M:%S}"
             info = await self._state.create_conversation(title)
             await self._state.switch_conversation(info.id)
@@ -252,6 +254,7 @@ class PentaApp(App):
             return
         self._switching = True
         try:
+            self._save_toggle_state()
             await state.switch_conversation(conversation_id)
         finally:
             self._switching = False
@@ -298,7 +301,19 @@ class PentaApp(App):
                     status_bar.mount(ExternalIndicator(ext_name))
         self._messages.rendered_up_to = len(state.conversation)
 
+        # Restore per-conversation toggle state
+        input_bar = self.query_one(InputBar)
+        saved = self._toggle_state.get(state.current_conversation_id, set())
+        input_bar.restore_toggle_state(saved)
+
         self._update_title()
+
+    def _save_toggle_state(self) -> None:
+        """Save current toggle state for the active conversation."""
+        if not self._state:
+            return
+        input_bar = self.query_one(InputBar)
+        self._toggle_state[self._state.current_conversation_id] = input_bar.save_toggle_state()
 
     def _update_title(self) -> None:
         if not self._state:

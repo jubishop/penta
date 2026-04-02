@@ -38,6 +38,13 @@ class _TestApp(App):
         self.submitted.append(event.text)
 
 
+def _type_and_submit(app: App, text: str) -> None:
+    """Insert text into the input and submit via the public action."""
+    ta = app.query_one("#input-text", TextArea)
+    ta.insert(text)
+    app.query_one(InputBar).action_submit()
+
+
 # -- Toggle rendering and state --
 
 
@@ -50,6 +57,18 @@ async def test_set_agents_creates_toggles():
         assert len(toggles) == 2
         assert toggles[0].agent_name == "claude"
         assert toggles[1].agent_name == "codex"
+
+
+async def test_set_agents_is_idempotent():
+    agents = _agents()
+    app = _TestApp(agents)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Call set_agents again — should replace, not duplicate
+        app.query_one(InputBar).set_agents(agents)
+        await pilot.pause()
+        toggles = app.query_one(InputBar).query(AgentToggle)
+        assert len(toggles) == 2
 
 
 async def test_toggle_click_activates():
@@ -98,9 +117,7 @@ async def test_prepend_single_active_toggle():
         toggles = app.query_one(InputBar).query(AgentToggle)
         await pilot.click(toggles[0])
 
-        ta = app.query_one("#input-text", TextArea)
-        ta.insert("hello")
-        app.query_one(InputBar)._submit()
+        _type_and_submit(app, "hello")
         await pilot.pause()
 
     assert len(app.submitted) == 1
@@ -117,9 +134,7 @@ async def test_prepend_multiple_active_toggles():
         await pilot.click(toggles[0])
         await pilot.click(toggles[1])
 
-        ta = app.query_one("#input-text", TextArea)
-        ta.insert("hello")
-        app.query_one(InputBar)._submit()
+        _type_and_submit(app, "hello")
         await pilot.pause()
 
     assert len(app.submitted) == 1
@@ -132,9 +147,7 @@ async def test_no_prepend_when_no_toggles_active():
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        ta = app.query_one("#input-text", TextArea)
-        ta.insert("hello")
-        app.query_one(InputBar)._submit()
+        _type_and_submit(app, "hello")
         await pilot.pause()
 
     assert len(app.submitted) == 1
@@ -150,9 +163,7 @@ async def test_no_double_prepend_when_already_mentioned():
         toggles = app.query_one(InputBar).query(AgentToggle)
         await pilot.click(toggles[0])
 
-        ta = app.query_one("#input-text", TextArea)
-        ta.insert("@claude explain this")
-        app.query_one(InputBar)._submit()
+        _type_and_submit(app, "@claude explain this")
         await pilot.pause()
 
     assert len(app.submitted) == 1
@@ -168,17 +179,15 @@ async def test_no_double_prepend_case_insensitive():
         toggles = app.query_one(InputBar).query(AgentToggle)
         await pilot.click(toggles[0])
 
-        ta = app.query_one("#input-text", TextArea)
-        ta.insert("@CLAUDE explain this")
-        app.query_one(InputBar)._submit()
+        _type_and_submit(app, "@CLAUDE explain this")
         await pilot.pause()
 
     assert len(app.submitted) == 1
     assert app.submitted[0] == "@CLAUDE explain this"
 
 
-async def test_prepend_skips_mention_in_code_block():
-    """A mention inside a code block shouldn't prevent prepending."""
+async def test_prepend_skips_mention_in_inline_code():
+    """A mention inside inline code shouldn't prevent prepending."""
     agents = _agents()
     app = _TestApp(agents)
 
@@ -187,13 +196,28 @@ async def test_prepend_skips_mention_in_code_block():
         toggles = app.query_one(InputBar).query(AgentToggle)
         await pilot.click(toggles[0])
 
-        ta = app.query_one("#input-text", TextArea)
-        ta.insert("check this `@claude` snippet")
-        app.query_one(InputBar)._submit()
+        _type_and_submit(app, "check this `@claude` snippet")
         await pilot.pause()
 
     assert len(app.submitted) == 1
     assert app.submitted[0] == "@claude check this `@claude` snippet"
+
+
+async def test_prepend_skips_mention_in_fenced_code_block():
+    """A mention inside a fenced code block shouldn't prevent prepending."""
+    agents = _agents()
+    app = _TestApp(agents)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        toggles = app.query_one(InputBar).query(AgentToggle)
+        await pilot.click(toggles[0])
+
+        _type_and_submit(app, "review this\n```\n@claude do stuff\n```")
+        await pilot.pause()
+
+    assert len(app.submitted) == 1
+    assert app.submitted[0] == "@claude review this\n```\n@claude do stuff\n```"
 
 
 async def test_partial_prepend_when_one_already_mentioned():
@@ -207,9 +231,7 @@ async def test_partial_prepend_when_one_already_mentioned():
         await pilot.click(toggles[0])
         await pilot.click(toggles[1])
 
-        ta = app.query_one("#input-text", TextArea)
-        ta.insert("@claude explain this")
-        app.query_one(InputBar)._submit()
+        _type_and_submit(app, "@claude explain this")
         await pilot.pause()
 
     assert len(app.submitted) == 1
@@ -226,15 +248,89 @@ async def test_toggle_state_persists_across_submits():
         toggles = app.query_one(InputBar).query(AgentToggle)
         await pilot.click(toggles[0])
 
-        ta = app.query_one("#input-text", TextArea)
-        ta.insert("first message")
-        app.query_one(InputBar)._submit()
+        _type_and_submit(app, "first message")
         await pilot.pause()
 
-        ta.insert("second message")
-        app.query_one(InputBar)._submit()
+        _type_and_submit(app, "second message")
         await pilot.pause()
 
     assert len(app.submitted) == 2
     assert app.submitted[0] == "@claude first message"
     assert app.submitted[1] == "@claude second message"
+
+
+# -- Slash command guard --
+
+
+async def test_no_prepend_for_slash_commands():
+    """Slash commands like /approve should never get mentions prepended."""
+    agents = _agents()
+    app = _TestApp(agents)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        toggles = app.query_one(InputBar).query(AgentToggle)
+        await pilot.click(toggles[0])
+
+        _type_and_submit(app, "/approve Claude")
+        await pilot.pause()
+
+    assert len(app.submitted) == 1
+    assert app.submitted[0] == "/approve Claude"
+
+
+async def test_no_prepend_for_revise_command():
+    agents = _agents()
+    app = _TestApp(agents)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        toggles = app.query_one(InputBar).query(AgentToggle)
+        await pilot.click(toggles[0])
+
+        _type_and_submit(app, "/revise Claude make it better")
+        await pilot.pause()
+
+    assert len(app.submitted) == 1
+    assert app.submitted[0] == "/revise Claude make it better"
+
+
+# -- Save / restore toggle state --
+
+
+async def test_save_and_restore_toggle_state():
+    agents = _agents()
+    app = _TestApp(agents)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_bar = app.query_one(InputBar)
+        toggles = input_bar.query(AgentToggle)
+        await pilot.click(toggles[0])
+
+        saved = input_bar.save_toggle_state()
+        assert saved == {"claude"}
+
+        # Deactivate, then restore
+        await pilot.click(toggles[0])
+        assert not toggles[0].active
+
+        input_bar.restore_toggle_state(saved)
+        assert toggles[0].active
+        assert not toggles[1].active
+
+
+async def test_restore_empty_state_clears_toggles():
+    agents = _agents()
+    app = _TestApp(agents)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_bar = app.query_one(InputBar)
+        toggles = input_bar.query(AgentToggle)
+        await pilot.click(toggles[0])
+        await pilot.click(toggles[1])
+
+        input_bar.restore_toggle_state(set())
+        assert not toggles[0].active
+        assert not toggles[1].active
