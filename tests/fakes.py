@@ -119,6 +119,7 @@ class FakeAgentService(AgentService):
                 elif isinstance(event, tuple) and len(event) == 2 and event[0] is _EXCEPTION_SENTINEL:
                     raise event[1]
                 else:
+                    assert isinstance(event, StreamEvent)
                     yield event
         finally:
             self._streaming = False

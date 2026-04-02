@@ -147,12 +147,14 @@ async def _migrate_v1_async(conn: aiosqlite.Connection) -> None:
     now = utc_iso_now()
     cur = await conn.execute("SELECT MIN(timestamp) FROM messages")
     row = await cur.fetchone()
+    assert row is not None
     created_at = row[0] if row[0] else now
 
     await conn.executescript(_MIGRATE_V1_CREATE_CONVERSATIONS)
 
     cur = await conn.execute("SELECT COUNT(*) FROM conversations WHERE id = 1")
     existing = await cur.fetchone()
+    assert existing is not None
     if existing[0] == 0:
         await conn.execute(
             "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (1, ?, ?, ?)",
@@ -173,11 +175,15 @@ async def _migrate_v1_async(conn: aiosqlite.Connection) -> None:
     cur = await conn.execute(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'"
     )
-    has_old = (await cur.fetchone())[0] > 0
+    r1 = await cur.fetchone()
+    assert r1 is not None
+    has_old = r1[0] > 0
     cur = await conn.execute(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions_new'"
     )
-    has_new = (await cur.fetchone())[0] > 0
+    r2 = await cur.fetchone()
+    assert r2 is not None
+    has_new = r2[0] > 0
 
     if has_old and not has_new:
         await conn.executescript("""
@@ -242,7 +248,9 @@ def run_migrations_sync(conn: sqlite3.Connection) -> None:
 async def run_migrations(conn: aiosqlite.Connection) -> None:
     """Run pending migrations using an async aiosqlite connection."""
     cur = await conn.execute("PRAGMA user_version")
-    current = (await cur.fetchone())[0]
+    ver_row = await cur.fetchone()
+    assert ver_row is not None
+    current = ver_row[0]
     for i, (_, migrate_async) in enumerate(_MIGRATIONS):
         version = i + 1
         if current < version:
@@ -261,6 +269,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
 def ensure_default_conversation_sync(conn: sqlite3.Connection) -> None:
     """Insert the default conversation if the table is empty (fresh DB)."""
     row = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()
+    assert row is not None
     if row[0] == 0:
         now = utc_iso_now()
         conn.execute(
@@ -274,6 +283,7 @@ async def ensure_default_conversation(conn: aiosqlite.Connection) -> None:
     """Insert the default conversation if the table is empty (fresh DB)."""
     cur = await conn.execute("SELECT COUNT(*) FROM conversations")
     row = await cur.fetchone()
+    assert row is not None
     if row[0] == 0:
         now = utc_iso_now()
         await conn.execute(

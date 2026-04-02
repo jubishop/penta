@@ -17,10 +17,6 @@ mkdir -p "$WORKTREE_PATH/.venv/bin"
 (
   cd "$WORKTREE_PATH" &&
   python3 -m venv --upgrade-deps .venv &&
-  .venv/bin/pip install -q -e ".[dev]" &&
-  # macOS: .claude/ has the UF_HIDDEN flag, which new files inherit.
-  # Python 3.14 skips hidden .pth files, breaking editable installs.
-  # Must run after pip install so the .pth files it creates get unhidden.
-  chflags -R nohidden "$WORKTREE_PATH/.venv" 2>/dev/null || true
+  .venv/bin/pip install -q -e ".[dev]"
 ) > "$BUILD_LOG" 2>&1 </dev/null &
 disown 2>/dev/null || true

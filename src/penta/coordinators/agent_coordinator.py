@@ -168,19 +168,20 @@ class AgentCoordinator:
                 match event.type:
                     case StreamEventType.SESSION_STARTED:
                         self.session_id = event.session_id
-                        await self._db.save_session(self.config.name, event.session_id)
+                        if event.session_id:
+                            await self._db.save_session(self.config.name, event.session_id)
                         log.info(
                             "[%s] Session: %s", self.config.name, event.session_id
                         )
 
                     case StreamEventType.TEXT_DELTA:
-                        response.text += event.text
+                        response.text += event.text or ""
                         if self.on_text_delta:
-                            self.on_text_delta(self.config.id, event.text)
+                            self.on_text_delta(self.config.id, event.text or "")
 
                     case StreamEventType.TEXT_COMPLETE:
                         if not response.text:
-                            response.text = event.text
+                            response.text = event.text or ""
 
                     case StreamEventType.TOOL_USE_STARTED:
                         log.info(
