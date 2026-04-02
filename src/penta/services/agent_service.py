@@ -62,7 +62,7 @@ class AgentService(ABC):
     """
 
     @abstractmethod
-    async def send(
+    def send(
         self,
         prompt: str,
         session_id: str | None,
@@ -105,7 +105,7 @@ class CliAgentService(AgentService):
     ) -> list[str]: ...
 
     @abstractmethod
-    async def _parse_line(self, data: dict) -> AsyncIterator[StreamEvent]: ...
+    def _parse_line(self, data: dict) -> AsyncIterator[StreamEvent]: ...
 
     # -- Overridable hooks ---------------------------------------------------
 
@@ -165,6 +165,8 @@ class CliAgentService(AgentService):
         )
         self._current_process = proc
 
+        assert proc.stderr is not None
+        assert proc.stdout is not None
         stderr_task = asyncio.create_task(proc.stderr.read())
 
         _completed = False

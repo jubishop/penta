@@ -206,6 +206,6 @@ class ChatMessage(Vertical):
         visual state change ourselves.
         """
         log.debug("Collapsing thinking (bypass scroll_visible)")
-        fold._reactive_collapsed = True
+        fold._reactive_collapsed = True  # type: ignore[attr-defined]
         fold._update_collapsed(True)
         fold.refresh(layout=True)

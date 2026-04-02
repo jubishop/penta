@@ -105,8 +105,10 @@ async def test_modal_enter_on_other_switches():
         await pilot.pause()
 
     assert len(results) == 1
-    assert results[0].action is ConversationAction.SWITCH
-    assert results[0].conversation_id == 2
+    result = results[0]
+    assert result is not None
+    assert result.action is ConversationAction.SWITCH
+    assert result.conversation_id == 2
 
 
 async def test_modal_new_returns_new_action():
@@ -124,7 +126,9 @@ async def test_modal_new_returns_new_action():
         await pilot.pause()
 
     assert len(results) == 1
-    assert results[0].action is ConversationAction.NEW
+    result = results[0]
+    assert result is not None
+    assert result.action is ConversationAction.NEW
 
 
 # ── RenameScreen tests ────────────────────────────────────────────

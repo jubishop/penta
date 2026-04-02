@@ -168,6 +168,7 @@ class TestCodexEventParsing:
 
         tool_events = [e for e in events if e.type == StreamEventType.TOOL_USE_STARTED]
         assert len(tool_events) == 1
+        assert tool_events[0].tool_name is not None
         assert "python asyncio" in tool_events[0].tool_name
 
     @pytest.mark.asyncio
@@ -192,6 +193,7 @@ class TestCodexEventParsing:
 
         thinking_events = [e for e in events if e.type == StreamEventType.THINKING]
         assert len(thinking_events) == 1
+        assert thinking_events[0].text is not None
         assert "[x] Read file" in thinking_events[0].text
         assert "[ ] Write test" in thinking_events[0].text
 
@@ -234,6 +236,7 @@ class TestCodexEventParsing:
 
         tool_events = [e for e in events if e.type == StreamEventType.TOOL_USE_STARTED]
         assert len(tool_events) == 1
+        assert tool_events[0].tool_name is not None
         assert "update src/main.py" in tool_events[0].tool_name
         assert "add src/util.py" in tool_events[0].tool_name
 
@@ -251,6 +254,7 @@ class TestCodexEventParsing:
 
         error_events = [e for e in events if e.type == StreamEventType.ERROR]
         assert len(error_events) == 1
+        assert error_events[0].error is not None
         assert "context window exceeded" in error_events[0].error
 
     @pytest.mark.asyncio
@@ -267,7 +271,9 @@ class TestCodexEventParsing:
 
         usage_events = [e for e in events if e.type == StreamEventType.USAGE]
         assert len(usage_events) == 1
-        assert usage_events[0].usage["input_tokens"] == 100
+        usage = usage_events[0].usage
+        assert usage is not None
+        assert usage["input_tokens"] == 100
 
 
 class TestCodexCancel:
@@ -322,7 +328,9 @@ class TestCodexStderrHandling:
 
         error_events = [e for e in events if e.type == StreamEventType.ERROR]
         assert len(error_events) == 1
-        assert "fatal: bad config" in error_events[0].error
+        error_msg = error_events[0].error
+        assert error_msg is not None
+        assert "fatal: bad config" in error_msg
 
 
 # -- Helpers ------------------------------------------------------------------
