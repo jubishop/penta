@@ -10,7 +10,7 @@ from penta.models import AgentConfig, AgentStatus
 
 
 class StatusIndicator(Static):
-    """Shows agent name + colored status dot. Click while processing to stop."""
+    """Shows agent name + colored status dot. Click while busy to act."""
 
     DEFAULT_CSS = """
     StatusIndicator {
@@ -22,8 +22,8 @@ class StatusIndicator(Static):
     }
     """
 
-    class StopRequested(Message):
-        """Posted when user clicks a processing indicator to stop that agent."""
+    class Clicked(Message):
+        """Posted when user clicks a busy indicator."""
 
         def __init__(self, agent_id: UUID) -> None:
             super().__init__()
@@ -52,7 +52,7 @@ class StatusIndicator(Static):
 
     def on_click(self) -> None:
         if self.status.is_busy:
-            self.post_message(self.StopRequested(self._config.id))
+            self.post_message(self.Clicked(self._config.id))
 
 
 class ExternalIndicator(Static):

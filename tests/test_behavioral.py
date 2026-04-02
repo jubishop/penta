@@ -233,6 +233,41 @@ class TestCancelAgent:
         cancelled = app.cancel_agent(claude.id)
         assert cancelled is False
 
+    async def test_cancel_by_name(self, multi_agent_state):
+        """cancel_agent works via agent_by_name (the /stop AgentName path)."""
+        app, services = multi_agent_state
+
+        await app.add_agent("claude", AgentType.CLAUDE)
+        await app.add_agent("codex", AgentType.CODEX)
+        services["claude"].enqueue_hang()
+        services["codex"].enqueue_hang()
+
+        await app.send_user_message("hello everyone")
+        await asyncio.sleep(0)
+
+        agent = app.agent_by_name("claude")
+        assert agent is not None
+        cancelled = app.cancel_agent(agent.id)
+        assert cancelled is True
+
+        codex = app.agent_by_name("codex")
+        assert codex is not None
+        assert codex.status == AgentStatus.PROCESSING
+
+    async def test_cancel_by_name_case_insensitive(self, multi_agent_state):
+        app, services = multi_agent_state
+
+        await app.add_agent("Claude", AgentType.CLAUDE)
+        services["Claude"].enqueue_hang()
+
+        await app.send_user_message("@Claude hello")
+        await asyncio.sleep(0)
+
+        # agent_by_name is case-insensitive
+        agent = app.agent_by_name("claude")
+        assert agent is not None
+        assert app.cancel_agent(agent.id) is True
+
 
 class _FooterTestApp(App):
     """Minimal app that reuses PentaApp's BINDINGS and check_action logic."""

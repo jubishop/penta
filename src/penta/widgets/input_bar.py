@@ -52,6 +52,11 @@ class InputBar(Horizontal):
         if event.button.id == "send-btn":
             self._submit()
 
+    @property
+    def has_text(self) -> bool:
+        """Return True if the input bar has non-whitespace content."""
+        return bool(self.query_one("#input-text", TextArea).text.strip())
+
     def prefill(self, text: str) -> None:
         """Pre-fill the input bar with text and move cursor to end."""
         ta = self.query_one("#input-text", TextArea)

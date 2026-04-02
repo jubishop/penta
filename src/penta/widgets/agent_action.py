@@ -51,11 +51,15 @@ class AgentActionScreen(ModalScreen[AgentAction | None]):
             yield Button("Approve", variant="success", id="approve-btn")
             yield Button("Revise", variant="warning", id="revise-btn")
             yield Button("Stop", variant="error", id="stop-btn")
+            yield Button("Cancel", id="cancel-btn")
 
     def on_mount(self) -> None:
         self.query_one("#approve-btn").focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel-btn":
+            self.dismiss(None)
+            return
         action_map: dict[str, AgentAction] = {
             "approve-btn": AgentAction.APPROVE,
             "revise-btn": AgentAction.REVISE,

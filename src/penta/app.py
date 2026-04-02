@@ -76,8 +76,8 @@ class PentaApp(App):
         if self._state:
             self._state.cancel_all_busy()
 
-    def on_status_indicator_stop_requested(
-        self, event: StatusIndicator.StopRequested,
+    def on_status_indicator_clicked(
+        self, event: StatusIndicator.Clicked,
     ) -> None:
         """Handle click on a busy StatusIndicator.
 
@@ -95,9 +95,25 @@ class PentaApp(App):
                 if action is None or not self._state:
                     return
                 if action is AgentAction.APPROVE:
-                    self._handle_approve(f"/approve {agent_name}")
+                    plan = self._state.pending_plans.get(agent_id)
+                    if plan:
+                        self._state.conversation.append(
+                            Message(
+                                sender=MessageSender.agent(agent_id),
+                                text=f"**Approved plan:**\n\n{plan.plan_text}",
+                            )
+                        )
+                    self._state.approve_plan(agent_id)
+                    self._render_new_messages()
                 elif action is AgentAction.REVISE:
-                    self.query_one(InputBar).prefill(f"/revise {agent_name} ")
+                    input_bar = self.query_one(InputBar)
+                    if input_bar.has_text:
+                        self.notify(
+                            f"Type /revise {agent_name} <feedback>",
+                            severity="information",
+                        )
+                    else:
+                        input_bar.prefill(f"/revise {agent_name} ")
                 elif action is AgentAction.STOP:
                     self._state.cancel_agent(agent_id)
 
