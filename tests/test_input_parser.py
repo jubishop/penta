@@ -1,6 +1,11 @@
 from uuid import uuid4
 
-from penta.input_parser import extract_mentions
+from penta.input_parser import (
+    extract_mentions,
+    has_agent_mention,
+    has_broadcast_mention,
+    strip_code_blocks,
+)
 from penta.models import AgentConfig, AgentType
 
 
@@ -69,3 +74,48 @@ class TestExtractMentions:
     def test_no_match_email_like(self):
         agents = _agents()
         assert extract_mentions("user@claude.com", agents) == set()
+
+
+class TestStripCodeBlocks:
+    def test_strips_fenced_block(self):
+        assert "@claude" not in strip_code_blocks("before ```@claude``` after")
+
+    def test_strips_inline_code(self):
+        assert "@claude" not in strip_code_blocks("before `@claude` after")
+
+    def test_preserves_text_outside_code(self):
+        assert "@claude" in strip_code_blocks("@claude `other`")
+
+
+class TestHasBroadcastMention:
+    def test_at_all(self):
+        assert has_broadcast_mention("@all hello")
+
+    def test_at_everyone(self):
+        assert has_broadcast_mention("@everyone hello")
+
+    def test_case_insensitive(self):
+        assert has_broadcast_mention("@ALL hello")
+
+    def test_no_broadcast(self):
+        assert not has_broadcast_mention("hello @claude")
+
+    def test_broadcast_in_code_block_ignored(self):
+        assert not has_broadcast_mention("`@all` hello")
+
+
+class TestHasAgentMention:
+    def test_finds_mention(self):
+        assert has_agent_mention("@claude hi", "claude")
+
+    def test_case_insensitive(self):
+        assert has_agent_mention("@CLAUDE hi", "claude")
+
+    def test_no_mention(self):
+        assert not has_agent_mention("hello", "claude")
+
+    def test_mention_in_code_block_ignored(self):
+        assert not has_agent_mention("`@claude` hello", "claude")
+
+    def test_bare_name_not_matched(self):
+        assert not has_agent_mention("claude hello", "claude")
