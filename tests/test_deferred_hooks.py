@@ -43,14 +43,6 @@ class _StubAgent:
     type: AgentType = AgentType.CLAUDE
 
 
-@dataclass
-class _StubCoordinator:
-    status: AgentStatus = AgentStatus.PROCESSING
-
-    def set_status(self, status: AgentStatus) -> None:
-        self.status = status
-
-
 class _StubState:
     """Minimal stand-in for AppState — just enough for the hook callbacks."""
 
@@ -58,7 +50,7 @@ class _StubState:
         self._permission_server = _StubPermissionServer()
         self.pending_plans: dict[UUID, PendingPlan] = {}
         self.conversation: list = []
-        self.coordinators: dict[UUID, _StubCoordinator] = {}
+        self.coordinators: dict = {}
         self._agents: dict[UUID, _StubAgent] = {}
 
     def add_agent(self, agent_id: UUID, name: str) -> _StubAgent:
@@ -77,13 +69,24 @@ class _StubState:
 
 
 class _SkeletonPentaApp(PentaApp):
-    """PentaApp that skips heavy on_mount initialisation."""
+    """PentaApp that skips heavy on_mount and avoids widget-mounting in tests.
+
+    _render_new_messages is stubbed out because the real implementation
+    mounts ChatMessage widgets that require full app initialisation.
+    We track calls to it so plan-guard tests can verify it was/wasn't called.
+    """
 
     CSS_PATH = None  # type: ignore[assignment]
 
+    def __init__(self, directory: Path, **kwargs) -> None:
+        super().__init__(directory, **kwargs)
+        self.render_calls: int = 0
+
     async def on_mount(self) -> None:
-        # Skip DB, agent creation, polling, etc.
         pass
+
+    def _render_new_messages(self) -> None:
+        self.render_calls += 1
 
 
 # -- Helpers -----------------------------------------------------------------
@@ -135,7 +138,6 @@ async def test_question_screen_skipped_when_stale():
         state = _StubState()
         agent_id = uuid4()
         state.add_agent(agent_id, "Claude")
-        # tool_use_id NOT in _pending — simulates cancel/resolve before call_later fires
         app._state = state  # type: ignore[assignment]
 
         app._on_question_asked(agent_id, _questions(), "stale_id")
@@ -149,7 +151,6 @@ async def test_question_screen_skipped_when_state_cleared():
     app = _SkeletonPentaApp(Path("/tmp/test"))
 
     async with app.run_test() as pilot:
-        # _state is None (default after skeleton on_mount)
         app._on_question_asked(uuid4(), _questions(), "tu_x")
         await pilot.pause()
 
@@ -159,8 +160,8 @@ async def test_question_screen_skipped_when_state_cleared():
 # -- Plan guard tests --------------------------------------------------------
 
 
-async def test_plan_notification_shown_when_still_pending():
-    """Plan render + notify fires when agent_id is still in pending_plans."""
+async def test_plan_render_called_when_still_pending():
+    """_render_new_messages + notify fire when agent_id is still pending."""
     app = _SkeletonPentaApp(Path("/tmp/test"))
 
     async with app.run_test() as pilot:
@@ -176,27 +177,24 @@ async def test_plan_notification_shown_when_still_pending():
         app._on_plan_review(agent_id, "do stuff", "tu_plan")
         await pilot.pause()
 
-        # The plan message was appended (immediately, outside call_later)
         assert len(state.conversation) == 1
-        # Notification was shown (inside call_later — would fail without guard passing)
+        assert app.render_calls == 1
         assert app._notifications
 
 
-async def test_plan_notification_skipped_when_stale():
-    """Plan notify is suppressed when agent_id no longer in pending_plans."""
+async def test_plan_render_skipped_when_stale():
+    """_render_new_messages + notify are suppressed when plan is no longer pending."""
     app = _SkeletonPentaApp(Path("/tmp/test"))
 
     async with app.run_test() as pilot:
         state = _StubState()
         agent_id = uuid4()
         state.add_agent(agent_id, "Claude")
-        # agent_id NOT in pending_plans — plan was approved/cancelled
         app._state = state  # type: ignore[assignment]
 
         app._on_plan_review(agent_id, "old plan", "tu_old")
         await pilot.pause()
 
-        # The message was still appended (data-only, outside guard)
         assert len(state.conversation) == 1
-        # But notification should NOT have fired
+        assert app.render_calls == 0
         assert not app._notifications
