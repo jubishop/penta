@@ -7,7 +7,9 @@ and verify prompts at the behavioral boundary.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
+from penta.app import PentaApp
 from penta.app_state import AppState
 from penta.models.agent_status import AgentStatus
 from penta.models.agent_type import AgentType
@@ -226,3 +228,51 @@ class TestCancelAgent:
         claude = await app.add_agent("claude", AgentType.CLAUDE)
         cancelled = app.cancel_agent(claude.id)
         assert cancelled is False
+
+
+class TestStopAgentsBinding:
+    """The 'Stop agents' escape binding should only be visible when busy."""
+
+    async def test_hidden_when_no_agents_busy(self, multi_agent_state):
+        app_state, services = multi_agent_state
+        await app_state.add_agent("claude", AgentType.CLAUDE)
+
+        tui = PentaApp(Path("/tmp/test"))
+        tui._state = app_state
+
+        assert tui.check_action("stop_agents", ()) is False
+
+    async def test_visible_when_agent_processing(self, multi_agent_state):
+        app_state, services = multi_agent_state
+        await app_state.add_agent("claude", AgentType.CLAUDE)
+        services["claude"].enqueue_hang()
+
+        await app_state.send_user_message("@claude hello")
+        await asyncio.sleep(0)
+
+        tui = PentaApp(Path("/tmp/test"))
+        tui._state = app_state
+
+        assert tui.check_action("stop_agents", ()) is True
+
+    async def test_hidden_after_agent_finishes(self, multi_agent_state):
+        app_state, services = multi_agent_state
+        await app_state.add_agent("claude", AgentType.CLAUDE)
+        services["claude"].enqueue_text("done")
+
+        await app_state.send_user_message("@claude hello")
+        await app_state.router.drain()
+
+        tui = PentaApp(Path("/tmp/test"))
+        tui._state = app_state
+
+        assert tui.check_action("stop_agents", ()) is False
+
+    async def test_other_actions_unaffected(self, multi_agent_state):
+        app_state, _ = multi_agent_state
+
+        tui = PentaApp(Path("/tmp/test"))
+        tui._state = app_state
+
+        assert tui.check_action("quit", ()) is True
+        assert tui.check_action("submit", ()) is True
