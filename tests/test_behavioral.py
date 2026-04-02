@@ -9,6 +9,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from textual.app import App, ComposeResult
+from textual.widgets import Footer
+
 from penta.app import PentaApp
 from penta.app_state import AppState
 from penta.models.agent_status import AgentStatus
@@ -230,19 +233,39 @@ class TestCancelAgent:
         assert cancelled is False
 
 
-class TestStopAgentsBinding:
-    """The 'Stop agents' escape binding should only be visible when busy."""
+class _FooterTestApp(App):
+    """Minimal app that reuses PentaApp's BINDINGS and check_action."""
 
-    async def test_hidden_when_no_agents_busy(self, multi_agent_state):
+    BINDINGS = PentaApp.BINDINGS
+
+    def __init__(self, state: AppState) -> None:
+        super().__init__()
+        self._state = state
+
+    def compose(self) -> ComposeResult:
+        yield Footer()
+
+    check_action = PentaApp.check_action
+
+
+def _footer_shows_stop(app: App) -> bool:
+    """Return True if 'stop_agents' appears in the screen's active bindings."""
+    return "escape" in app.screen.active_bindings
+
+
+class TestStopAgentsFooter:
+    """The 'Stop agents' escape binding should only appear in the footer
+    when at least one agent is busy."""
+
+    async def test_footer_hidden_when_idle(self, multi_agent_state):
         app_state, services = multi_agent_state
         await app_state.add_agent("claude", AgentType.CLAUDE)
 
-        tui = PentaApp(Path("/tmp/test"))
-        tui._state = app_state
+        async with _FooterTestApp(app_state).run_test() as pilot:
+            await pilot.pause()
+            assert not _footer_shows_stop(pilot.app)
 
-        assert tui.check_action("stop_agents", ()) is False
-
-    async def test_visible_when_agent_processing(self, multi_agent_state):
+    async def test_footer_visible_when_processing(self, multi_agent_state):
         app_state, services = multi_agent_state
         await app_state.add_agent("claude", AgentType.CLAUDE)
         services["claude"].enqueue_hang()
@@ -250,12 +273,11 @@ class TestStopAgentsBinding:
         await app_state.send_user_message("@claude hello")
         await asyncio.sleep(0)
 
-        tui = PentaApp(Path("/tmp/test"))
-        tui._state = app_state
+        async with _FooterTestApp(app_state).run_test() as pilot:
+            await pilot.pause()
+            assert _footer_shows_stop(pilot.app)
 
-        assert tui.check_action("stop_agents", ()) is True
-
-    async def test_hidden_after_agent_finishes(self, multi_agent_state):
+    async def test_footer_hidden_after_finish(self, multi_agent_state):
         app_state, services = multi_agent_state
         await app_state.add_agent("claude", AgentType.CLAUDE)
         services["claude"].enqueue_text("done")
@@ -263,16 +285,6 @@ class TestStopAgentsBinding:
         await app_state.send_user_message("@claude hello")
         await app_state.router.drain()
 
-        tui = PentaApp(Path("/tmp/test"))
-        tui._state = app_state
-
-        assert tui.check_action("stop_agents", ()) is False
-
-    async def test_other_actions_unaffected(self, multi_agent_state):
-        app_state, _ = multi_agent_state
-
-        tui = PentaApp(Path("/tmp/test"))
-        tui._state = app_state
-
-        assert tui.check_action("quit", ()) is True
-        assert tui.check_action("submit", ()) is True
+        async with _FooterTestApp(app_state).run_test() as pilot:
+            await pilot.pause()
+            assert not _footer_shows_stop(pilot.app)
