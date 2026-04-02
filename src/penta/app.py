@@ -61,6 +61,15 @@ class PentaApp(App):
         log.info("action_quit triggered")
         self.exit()
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "stop_agents":
+            if not self._state:
+                return False
+            return any(
+                c.config.status.is_busy for c in self._state.coordinators.values()
+            )
+        return super().check_action(action, parameters)
+
     def action_stop_agents(self) -> None:
         """Stop all currently streaming agents."""
         if self._state:
@@ -511,6 +520,7 @@ class PentaApp(App):
         indicator = self._status_indicators.get(agent_id)
         if indicator:
             indicator.status = status
+        self.refresh_bindings()
 
     def _render_new_messages(self) -> None:
         """Mount widgets for any conversation messages not yet rendered."""
