@@ -170,6 +170,32 @@ class TestExternalMessageRouting:
         claude_coord.send.assert_not_called()
         codex_coord.send.assert_not_called()
 
+    async def test_external_at_all_routes_to_all(
+        self, router, agents, coordinators,
+    ):
+        claude = _make_agent("claude", AgentType.CLAUDE)
+        codex = _make_agent("codex", AgentType.CODEX)
+
+        claude_coord = _register(agents, coordinators, claude)
+        codex_coord = _register(agents, coordinators, codex)
+
+        router.receive_external_message("Alice", "@all what do you think?")
+        claude_coord.send.assert_called_once()
+        codex_coord.send.assert_called_once()
+
+    async def test_external_at_everyone_routes_to_all(
+        self, router, agents, coordinators,
+    ):
+        claude = _make_agent("claude", AgentType.CLAUDE)
+        codex = _make_agent("codex", AgentType.CODEX)
+
+        claude_coord = _register(agents, coordinators, claude)
+        codex_coord = _register(agents, coordinators, codex)
+
+        router.receive_external_message("Alice", "@everyone hello")
+        claude_coord.send.assert_called_once()
+        codex_coord.send.assert_called_once()
+
 
 class TestRoutingDepthLimit:
     async def test_stops_at_max_hops(self, router, agents, coordinators):

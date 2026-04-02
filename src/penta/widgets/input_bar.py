@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import re
-
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Button, Static, TextArea
 
+from penta.input_parser import has_agent_mention, has_broadcast_mention
 from penta.models import AgentConfig
 
 
@@ -129,16 +128,12 @@ class InputBar(Vertical):
         if not text:
             return
 
-        # Don't prepend mentions to slash commands — they have their own targeting
+        # Don't prepend mentions to slash commands or broadcast messages
         active = self._active_toggles()
-        if active and not text.startswith("/"):
-            text_lower = text.lower()
-            stripped = re.sub(r"```[\s\S]*?```", "", text_lower)
-            stripped = re.sub(r"`[^`]+`", "", stripped)
+        if active and not text.startswith("/") and not has_broadcast_mention(text):
             prefixes = []
             for toggle in active:
-                pattern = rf"(?<!\w)@{re.escape(toggle.agent_name.lower())}\b"
-                if not re.search(pattern, stripped):
+                if not has_agent_mention(text, toggle.agent_name):
                     prefixes.append(f"@{toggle.agent_name}")
             if prefixes:
                 text = " ".join(prefixes) + " " + text

@@ -262,7 +262,9 @@ class PentaApp(App):
     async def _handle_delete(self, conversation_id: int) -> None:
         assert self._state is not None
         deleted = await self._state.delete_conversation(conversation_id)
-        if not deleted:
+        if deleted:
+            self._toggle_state.pop(conversation_id, None)
+        else:
             self.notify("Cannot delete the active or only conversation", severity="warning")
 
     def on_conversation_list_screen_rename_requested(
