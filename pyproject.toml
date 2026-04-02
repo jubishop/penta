@@ -16,6 +16,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
     "pyright>=1.1",
 ]
 
@@ -29,4 +30,5 @@ packages = ["src/penta", "src/penta_mcp"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+timeout = 30
 filterwarnings = ["error"]
