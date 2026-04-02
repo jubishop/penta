@@ -338,27 +338,30 @@ class AppState:
                 self._permission_server.resolve_all_pending()
             self.pending_plans.clear()
 
-            # 3. Wait for pending routing tasks to persist to the current conversation
+            # 3. Discard stalled routes from the old conversation
+            self.router.clear_stalled()
+
+            # 4. Wait for pending routing tasks to persist to the current conversation
             await self.router.drain()
 
-            # 4. Shut down coordinators (cancels processes, shuts down services)
+            # 5. Shut down coordinators (cancels processes, shuts down services)
             for coord in self.coordinators.values():
                 await coord.shutdown()
 
-            # 5. Switch DB context (resets _last_seen_id for the new conversation)
+            # 6. Switch DB context (resets _last_seen_id for the new conversation)
             await self.db.set_conversation(conversation_id)
 
-            # 6. Clear in-memory state (same list/dict objects — router refs stay valid)
+            # 7. Clear in-memory state (same list/dict objects — router refs stay valid)
             self.conversation.clear()
             self.router.external_participants.clear()
 
-            # 7. Rebuild coordinators with new conversation's sessions
+            # 8. Rebuild coordinators with new conversation's sessions
             await self._rebuild_coordinators()
 
-            # 8. Load new conversation's history
+            # 9. Load new conversation's history
             await self.load_chat_history()
 
-            # 9. Update conversation tracking
+            # 10. Update conversation tracking
             self.current_conversation_id = conversation_id
             rows = await self.db.list_conversations()
             for cid, title, _, _ in rows:
@@ -367,10 +370,10 @@ class AppState:
                     break
 
         finally:
-            # 10. Resume external polling
+            # 11. Resume external polling
             self.db.resume_polling()
 
-        # 11. Notify UI
+        # 12. Notify UI
         if self.on_conversation_switched:
             self.on_conversation_switched()
 

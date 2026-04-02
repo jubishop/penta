@@ -58,7 +58,7 @@ class PentaApp(App):
         ("ctrl+n", "new_conversation", "New chat"),
         ("ctrl+l", "list_conversations", "Chats"),
         ("ctrl+r", "continue_routing", "Continue"),
-        ("ctrl+h", "set_round_limit", "Round limit"),
+        ("ctrl+g", "set_round_limit", "Round limit"),
     ]
 
     _routing_stalled = reactive(False, bindings=True)
@@ -69,8 +69,17 @@ class PentaApp(App):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "continue_routing":
-            return self._routing_stalled
+            return self._routing_stalled and self._all_agents_idle()
         return True
+
+    def _all_agents_idle(self) -> bool:
+        if not self._state:
+            return False
+        return all(
+            not a.status.is_busy
+            for a in self._state.agents
+            if a.status != AgentStatus.DISCONNECTED
+        )
 
     def action_stop_agents(self) -> None:
         """Stop all currently streaming agents."""
@@ -81,7 +90,7 @@ class PentaApp(App):
         """Resume agent-to-agent routing after a round limit stop."""
         if self._state and self._state.is_routing_stalled:
             self._state.continue_routing()
-            self._routing_stalled = False
+            self._sync_routing_stalled()
 
     def action_set_round_limit(self) -> None:
         """Open a modal to configure the agent-to-agent round limit."""
@@ -201,7 +210,6 @@ class PentaApp(App):
     async def on_input_bar_submitted(self, event: InputBar.Submitted) -> None:
         if not self._state or self._switching:
             return
-        self._routing_stalled = False
         text = event.text.strip()
 
         # /approve [AgentName] — approve a pending plan
@@ -301,6 +309,7 @@ class PentaApp(App):
 
     def _on_conversation_switched(self) -> None:
         """Rebuild the chat room UI after a conversation switch."""
+        self._routing_stalled = False
         state = self._state
         assert state is not None
         chat_room = self.query_one("#chat-room", ChatRoom)
@@ -490,9 +499,16 @@ class PentaApp(App):
 
     def _on_status_changed(self, agent_id: UUID, status: AgentStatus) -> None:
         self._apply_status_change(agent_id, status)
+        self._sync_routing_stalled()
 
     def _on_routing_stalled(self) -> None:
-        self._routing_stalled = True
+        self._sync_routing_stalled()
+
+    def _sync_routing_stalled(self) -> None:
+        """Update the reactive flag from the router's actual stall state."""
+        stalled = bool(self._state and self._state.is_routing_stalled)
+        if self._routing_stalled != stalled:
+            self._routing_stalled = stalled
 
     def _on_external_message(self, sender: str, text: str) -> None:
         self._render_new_messages()

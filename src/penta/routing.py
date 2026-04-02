@@ -31,7 +31,8 @@ class RouteMode(Enum):
 class _StalledRoute:
     tagged: TaggedMessage
     excluding: UUID | None
-    mentioned: set[UUID]
+    mentioned: frozenset[UUID]
+    mode: RouteMode
 
 
 class MessageRouter:
@@ -71,6 +72,10 @@ class MessageRouter:
     def is_stalled(self) -> bool:
         return bool(self._stalled)
 
+    def clear_stalled(self) -> None:
+        """Discard all stalled routes (e.g. on conversation switch)."""
+        self._stalled.clear()
+
     def continue_routing(self) -> None:
         """Resume routing from the point where the round limit stopped it."""
         stalled = list(self._stalled)
@@ -78,8 +83,8 @@ class MessageRouter:
         for sr in stalled:
             self.route(
                 sr.tagged, excluding=sr.excluding,
-                mentioned=sr.mentioned,
-                mode=RouteMode.MENTIONED_ONLY,
+                mentioned=set(sr.mentioned),
+                mode=sr.mode,
             )
 
     async def send_user_message(
@@ -139,8 +144,8 @@ class MessageRouter:
             responding = mentioned
 
         if hops >= self._round_limit and responding:
-            log.warning("Routing depth limit reached (%d hops), stopping propagation", hops)
-            self._stalled.append(_StalledRoute(tagged, excluding, mentioned))
+            log.warning("Round limit reached (%d hops), stopping propagation", hops)
+            self._stalled.append(_StalledRoute(tagged, excluding, frozenset(mentioned), mode))
             if self.on_routing_stalled:
                 self.on_routing_stalled()
             return
