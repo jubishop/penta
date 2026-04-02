@@ -195,6 +195,24 @@ class TestAppStateConversationSwitching:
         yield state, services
         await state.shutdown()
 
+    async def test_switch_clears_stalled_routes(self, state_with_agents):
+        """Stalled routes from conversation A must not survive into conversation B."""
+        state, services = state_with_agents
+
+        # Trigger a stall in the default conversation
+        services["Claude"].enqueue_text("@Codex what do you think?")
+        services["Codex"].enqueue_text("@Claude I agree")
+        state.round_limit = 1
+
+        await state.send_user_message("@Claude go")
+        await state.router.drain()
+        assert state.is_routing_stalled
+
+        # Switch to a new conversation — stalled routes should be discarded
+        info = await state.create_conversation("Fresh")
+        await state.switch_conversation(info.id)
+        assert not state.is_routing_stalled
+
     async def test_switch_loads_correct_history(self, state_with_agents):
         state, services = state_with_agents
 

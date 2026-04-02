@@ -172,16 +172,29 @@ class TestExternalMessageRouting:
 
 
 class TestRoutingDepthLimit:
-    async def test_stops_at_max_hops(self, router, agents, coordinators):
+    async def test_stops_above_limit(self, router, agents, coordinators):
         claude = _make_agent("claude", AgentType.CLAUDE)
         coord = _register(agents, coordinators, claude)
 
         tagged = TaggedMessage(sender_label="User", text="hello")
+        # hops=4 exceeds default limit of 3 (stalls when hops > limit)
+        router.route(
+            tagged, excluding=None, mentioned={claude.id},
+            mode=RouteMode.MENTIONED_ONLY, hops=4,
+        )
+        coord.send.assert_not_called()
+
+    async def test_at_limit_routes_normally(self, router, agents, coordinators):
+        claude = _make_agent("claude", AgentType.CLAUDE)
+        coord = _register(agents, coordinators, claude)
+
+        tagged = TaggedMessage(sender_label="User", text="hello")
+        # hops=3 equals limit — should still route (stalls only when hops > limit)
         router.route(
             tagged, excluding=None, mentioned={claude.id},
             mode=RouteMode.MENTIONED_ONLY, hops=3,
         )
-        coord.send.assert_not_called()
+        coord.send.assert_called_once()
 
     async def test_under_limit_routes_normally(self, router, agents, coordinators):
         claude = _make_agent("claude", AgentType.CLAUDE)
@@ -452,19 +465,19 @@ class TestRoundLimit:
         router.round_limit = 2
         tagged = TaggedMessage(sender_label="User", text="hello")
 
-        # hops=1 should still route (under limit of 2)
+        # hops=2 should still route (at limit — stalls only when hops > limit)
         router.route(
             tagged, excluding=None, mentioned={claude.id},
-            mode=RouteMode.MENTIONED_ONLY, hops=1,
+            mode=RouteMode.MENTIONED_ONLY, hops=2,
         )
         coord.send.assert_called_once()
 
         coord.reset_mock()
 
-        # hops=2 should be blocked (at limit)
+        # hops=3 should be blocked (above limit)
         router.route(
             tagged, excluding=None, mentioned={claude.id},
-            mode=RouteMode.MENTIONED_ONLY, hops=2,
+            mode=RouteMode.MENTIONED_ONLY, hops=3,
         )
         coord.send.assert_not_called()
 
@@ -477,7 +490,7 @@ class TestStalledRouting:
         tagged = TaggedMessage(sender_label="User", text="hello")
         router.route(
             tagged, excluding=None, mentioned={claude.id},
-            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit,
+            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit + 1,
         )
         assert router.is_stalled
 
@@ -502,7 +515,7 @@ class TestStalledRouting:
         tagged = TaggedMessage(sender_label="User", text="hello")
         router.route(
             tagged, excluding=None, mentioned={claude.id},
-            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit,
+            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit + 1,
         )
         assert stalled_events == [True]
 
@@ -513,7 +526,7 @@ class TestStalledRouting:
         tagged = TaggedMessage(sender_label="User", text="hello")
         router.route(
             tagged, excluding=None, mentioned={claude.id},
-            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit,
+            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit + 1,
         )
         assert router.is_stalled
         coord.send.assert_not_called()
@@ -532,7 +545,7 @@ class TestStalledRouting:
         tagged = TaggedMessage(sender_label="User", text="hello")
         router.route(
             tagged, excluding=None, mentioned={claude.id},
-            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit,
+            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit + 1,
         )
         assert router.is_stalled
 
@@ -550,15 +563,17 @@ class TestStalledRouting:
         codex_fake = FakeAgentService()
         # Claude responds mentioning codex
         claude_fake.enqueue_text("@codex what do you think?")
-        # Codex responds
-        codex_fake.enqueue_text("I agree")
+        # Codex responds mentioning claude back (triggers stall at hop 2)
+        codex_fake.enqueue_text("@claude I agree")
+        # Claude responds after continue (hop 1 of fresh budget)
+        claude_fake.enqueue_text("great, thanks")
 
         fakes = {claude.id: claude_fake, codex.id: codex_fake}
         router, conversation, coordinators = _make_router_with_real_coordinators(
             [claude, codex], fakes, memory_db,
         )
 
-        # Set limit to 1 so the first cascade stalls
+        # round_limit=1: allows 1 exchange (hop 0 + hop 1), stalls at hop 2
         router.round_limit = 1
 
         tagged = TaggedMessage(sender_label="User", text="@claude go")
@@ -568,14 +583,13 @@ class TestStalledRouting:
         )
         await router.drain()
 
-        # Claude responded, its mention of @codex should have stalled
+        # Claude→codex happened (hop 1), codex→claude stalled (hop 2 > limit 1)
         assert router.is_stalled
+        assert len(claude_fake.calls) == 1
+        assert len(codex_fake.calls) == 1
 
-        # Continue should deliver the stalled message to codex
+        # Continue replays with fresh budget — claude should respond
         router.continue_routing()
         await router.drain()
 
-        assert not router.is_stalled
-        # Both agents should have been called
-        assert len(claude_fake.calls) == 1
-        assert len(codex_fake.calls) == 1
+        assert len(claude_fake.calls) == 2

@@ -77,7 +77,7 @@ class MessageRouter:
         self._stalled.clear()
 
     def continue_routing(self) -> None:
-        """Resume routing from the point where the round limit stopped it."""
+        """Replay stalled routes with a fresh hop budget, allowing another round of exchanges."""
         stalled = list(self._stalled)
         self._stalled.clear()
         for sr in stalled:
@@ -143,8 +143,16 @@ class MessageRouter:
         else:
             responding = mentioned
 
-        if hops >= self._round_limit and responding:
+        if hops > self._round_limit and responding:
             log.warning("Round limit reached (%d hops), stopping propagation", hops)
+            # Inject context for agents that won't respond, so they stay in sync
+            for agent in self._agents:
+                if agent.id == excluding or agent.status == AgentStatus.DISCONNECTED:
+                    continue
+                if agent.id not in responding:
+                    coord = self._coordinators.get(agent.id)
+                    if coord:
+                        coord.inject_context(tagged)
             self._stalled.append(_StalledRoute(tagged, excluding, frozenset(mentioned), mode))
             if self.on_routing_stalled:
                 self.on_routing_stalled()

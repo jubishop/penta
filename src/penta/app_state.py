@@ -338,11 +338,11 @@ class AppState:
                 self._permission_server.resolve_all_pending()
             self.pending_plans.clear()
 
-            # 3. Discard stalled routes from the old conversation
-            self.router.clear_stalled()
-
-            # 4. Wait for pending routing tasks to persist to the current conversation
+            # 3. Wait for pending routing tasks to persist to the current conversation
             await self.router.drain()
+
+            # 4. Discard stalled routes from the old conversation
+            self.router.clear_stalled()
 
             # 5. Shut down coordinators (cancels processes, shuts down services)
             for coord in self.coordinators.values():

@@ -240,6 +240,7 @@ class PentaApp(App):
             return
 
         await self._state.send_user_message(text)
+        self._sync_routing_stalled()
         self._render_new_messages()
 
     # -- Conversation management --
