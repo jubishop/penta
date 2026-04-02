@@ -1,0 +1,6 @@
+{
+    "include": ["src", "tests"],
+    "exclude": ["worktrees"],
+    "venvPath": ".",
+    "venv": ".venv"
+}

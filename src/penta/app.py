@@ -63,7 +63,7 @@ class PentaApp(App):
 
     _routing_stalled = reactive(False, bindings=True)
 
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
         log.info("action_quit triggered")
         self.exit()
 
@@ -220,6 +220,7 @@ class PentaApp(App):
             def on_pick(agent_id: UUID | None) -> None:
                 if agent_id is not None:
                     async def _send_and_render():
+                        assert self._state is not None
                         await self._state.send_user_message(text, resolved_plan_id=agent_id)
                         self._render_new_messages()
                     task = asyncio.create_task(_send_and_render())
@@ -272,15 +273,18 @@ class PentaApp(App):
         )
 
     async def _handle_switch(self, conversation_id: int) -> None:
+        state = self._state
+        assert state is not None
         if self._switching:
             return
         self._switching = True
         try:
-            await self._state.switch_conversation(conversation_id)
+            await state.switch_conversation(conversation_id)
         finally:
             self._switching = False
 
     async def _handle_delete(self, conversation_id: int) -> None:
+        assert self._state is not None
         deleted = await self._state.delete_conversation(conversation_id)
         if not deleted:
             self.notify("Cannot delete the active or only conversation", severity="warning")
@@ -291,11 +295,14 @@ class PentaApp(App):
         self._conversation_task(self._handle_rename(event.conversation_id, event.title))
 
     async def _handle_rename(self, conversation_id: int, title: str) -> None:
+        assert self._state is not None
         await self._state.rename_conversation(conversation_id, title)
         self._update_title()
 
     def _on_conversation_switched(self) -> None:
         """Rebuild the chat room UI after a conversation switch."""
+        state = self._state
+        assert state is not None
         chat_room = self.query_one("#chat-room", ChatRoom)
         chat_room.remove_children()
         self._messages = _MessageTracker()
@@ -306,17 +313,17 @@ class PentaApp(App):
             widget.remove()
 
         # Re-render loaded history and rebuild external indicators
-        for msg in self._state.conversation:
+        for msg in state.conversation:
             name, agent_type = self._sender_info(msg)
             widget = chat_room.add_message(msg, name, agent_type)
             self._messages.register(msg, widget)
             # Rebuild external participant indicators from history
             if msg.sender.is_external and msg.sender.name:
                 ext_name = msg.sender.name
-                if ext_name not in self._state.external_participants:
-                    self._state.router.external_participants.add(ext_name)
+                if ext_name not in state.external_participants:
+                    state.router.external_participants.add(ext_name)
                     status_bar.mount(ExternalIndicator(ext_name))
-        self._messages.rendered_up_to = len(self._state.conversation)
+        self._messages.rendered_up_to = len(state.conversation)
 
         self._update_title()
 
@@ -333,25 +340,29 @@ class PentaApp(App):
 
     def _handle_approve(self, text: str) -> None:
         """Handle /approve [AgentName]."""
+        state = self._state
+        assert state is not None
         parts = text.split(maxsplit=1)
         agent_name = parts[1].strip() if len(parts) > 1 else None
         agent_id = self._resolve_plan_agent(agent_name)
         if agent_id is None:
             return
         # Add plan text as a visible message in conversation
-        plan = self._state.pending_plans.get(agent_id)
+        plan = state.pending_plans.get(agent_id)
         if plan:
-            self._state.conversation.append(
+            state.conversation.append(
                 Message(
                     sender=MessageSender.agent(agent_id),
                     text=f"**Approved plan:**\n\n{plan.plan_text}",
                 )
             )
-        self._state.approve_plan(agent_id)
+        state.approve_plan(agent_id)
         self._render_new_messages()
 
     async def _handle_revise(self, text: str) -> None:
         """Handle /revise [AgentName] <feedback>."""
+        state = self._state
+        assert state is not None
         parts = text.split(maxsplit=2)
         if len(parts) < 2:
             self.notify("Usage: /revise [AgentName] <feedback>", severity="warning")
@@ -374,16 +385,17 @@ class PentaApp(App):
             self.notify("Please provide feedback for the revision", severity="warning")
             return
 
-        agent = self._state.agent_by_id(agent_id)
+        agent = state.agent_by_id(agent_id)
         agent_name = agent.name if agent else "Agent"
-        self._state.reject_plan(agent_id)
+        state.reject_plan(agent_id)
         # Route feedback directly — bypass /plan interpolation so "/plan"
         # in user feedback doesn't accidentally inject another agent's plan.
-        await self._state.router.send_user_message(f"@{agent_name} Please revise your plan: {feedback}")
+        await state.router.send_user_message(f"@{agent_name} Please revise your plan: {feedback}")
         self._render_new_messages()
 
     def _resolve_plan_agent(self, agent_name: str | None) -> UUID | None:
         """Resolve which pending plan to act on."""
+        assert self._state is not None
         plans = self._state.pending_plans
         if not plans:
             self.notify("No plans pending", severity="warning")

@@ -239,6 +239,7 @@ class TestClaudeEventParsing:
 
         warnings = [e for e in events if e.type == StreamEventType.WARNING]
         assert len(warnings) == 1
+        assert warnings[0].error is not None
         assert "attempt 2" in warnings[0].error
 
     @pytest.mark.asyncio
@@ -267,6 +268,7 @@ class TestClaudeEventParsing:
 
         warnings = [e for e in events if e.type == StreamEventType.WARNING]
         assert len(warnings) == 1
+        assert warnings[0].error is not None
         assert "Rate limited" in warnings[0].error
 
     @pytest.mark.asyncio
@@ -285,6 +287,7 @@ class TestClaudeEventParsing:
 
         usage_events = [e for e in events if e.type == StreamEventType.USAGE]
         assert len(usage_events) == 1
+        assert usage_events[0].usage is not None
         assert usage_events[0].usage["cost_usd"] == 0.05
         assert usage_events[0].usage["input_tokens"] == 100
         assert usage_events[0].usage["duration_ms"] == 3000
@@ -359,6 +362,7 @@ class TestClaudeStderrHandling:
 
         errors = [e for e in events if e.type == StreamEventType.ERROR]
         assert len(errors) == 1
+        assert errors[0].error is not None
         assert "auth failed" in errors[0].error
 
 
