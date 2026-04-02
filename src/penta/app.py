@@ -388,6 +388,11 @@ class PentaApp(App):
         The hook HTTP response is blocked until the user answers.
         Answers are injected via updatedInput so Claude receives them
         directly as the AskUserQuestion tool result.
+
+        This callback is invoked from ``run_coroutine_threadsafe`` (permission
+        server), so Textual's ``active_app`` ContextVar is **not** set.
+        ``call_later`` defers ``push_screen`` into the message pump where the
+        context is correct.
         """
         if not self._state:
             return
@@ -409,36 +414,48 @@ class PentaApp(App):
             if coord:
                 coord.set_status(AgentStatus.PROCESSING)
 
-        self.push_screen(
-            QuestionPickerScreen(agent_name, questions),
-            callback=on_answers,
+        self.call_later(
+            lambda: self.push_screen(
+                QuestionPickerScreen(agent_name, questions),
+                callback=on_answers,
+            ),
         )
 
     def _on_plan_review(
         self, agent_id: UUID, plan_text: str, tool_use_id: str,
     ) -> None:
-        """Show the plan as an inline message and notify the user."""
+        """Show the plan as an inline message and notify the user.
+
+        Like ``_on_question_asked``, this is called from
+        ``run_coroutine_threadsafe`` so UI work must be deferred via
+        ``call_later``.
+        """
         if not self._state:
             return
         agent = self._state.agent_by_id(agent_id)
         agent_name = agent.name if agent else "Agent"
 
-        # Add plan as a message in the chat
+        # Add plan as a message in the chat (data-only, no UI)
         self._state.conversation.append(
             Message(
                 sender=MessageSender.agent(agent_id),
                 text=f"**Plan awaiting approval:**\n\n{plan_text}",
             )
         )
-        self._render_new_messages()
-        self.notify(
-            f"Plan from {agent_name} — /approve, /revise <feedback>, "
-            f"or share with /plan",
-            severity="information",
-        )
 
-    # -- Callbacks from AppState --
-    # These run on the same asyncio event loop as Textual, so call directly.
+        def _show() -> None:
+            self._render_new_messages()
+            self.notify(
+                f"Plan from {agent_name} — /approve, /revise <feedback>, "
+                f"or share with /plan",
+                severity="information",
+            )
+
+        self.call_later(_show)
+
+    # -- Callbacks from AppState (streaming) --
+    # These originate from asyncio tasks created within Textual's context,
+    # so active_app is set and they can touch UI directly.
 
     def _on_text_delta(self, agent_id: UUID, delta: str) -> None:
         self._apply_text_delta(agent_id)
