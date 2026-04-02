@@ -7,7 +7,13 @@ and verify prompts at the behavioral boundary.
 from __future__ import annotations
 
 import asyncio
+from uuid import UUID
 
+from textual.app import App, ComposeResult
+from textual.widgets import Footer
+from textual.widgets._footer import FooterKey
+
+from penta.app import PentaApp
 from penta.app_state import AppState
 from penta.models.agent_status import AgentStatus
 from penta.models.agent_type import AgentType
@@ -226,3 +232,100 @@ class TestCancelAgent:
         claude = await app.add_agent("claude", AgentType.CLAUDE)
         cancelled = app.cancel_agent(claude.id)
         assert cancelled is False
+
+
+class _FooterTestApp(App):
+    """Minimal app that reuses PentaApp's BINDINGS and check_action logic."""
+
+    BINDINGS = PentaApp.BINDINGS
+
+    def __init__(self, state: AppState) -> None:
+        super().__init__()
+        self._state = state
+        # Wire the same callback PentaApp uses so status changes refresh the footer
+        state.on_status_changed = self._on_status_changed
+
+    def _on_status_changed(self, agent_id: UUID, status: AgentStatus) -> None:
+        if self.is_running:
+            self.refresh_bindings()
+
+    def compose(self) -> ComposeResult:
+        yield Footer()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "stop_agents":
+            if not self._state:
+                return False
+            return any(
+                c.config.status.is_busy for c in self._state.coordinators.values()
+            )
+        return super().check_action(action, parameters)
+
+
+def _has_stop_footer_key(app: App) -> bool:
+    """Return True if the rendered Footer contains a FooterKey for stop_agents."""
+    return any(k.action == "stop_agents" for k in app.query(FooterKey))
+
+
+class TestStopAgentsFooter:
+    """The 'Stop agents' escape binding should only appear in the footer
+    when at least one agent is busy."""
+
+    async def test_footer_hidden_when_idle(self, multi_agent_state):
+        app_state, _ = multi_agent_state
+        await app_state.add_agent("claude", AgentType.CLAUDE)
+
+        async with _FooterTestApp(app_state).run_test() as pilot:
+            await pilot.pause()
+            assert not _has_stop_footer_key(pilot.app)
+
+    async def test_footer_appears_when_agent_starts(self, multi_agent_state):
+        """Start idle, trigger processing mid-session, verify footer updates."""
+        app_state, services = multi_agent_state
+        await app_state.add_agent("claude", AgentType.CLAUDE)
+        services["claude"].enqueue_hang()
+
+        async with _FooterTestApp(app_state).run_test() as pilot:
+            await pilot.pause()
+            assert not _has_stop_footer_key(pilot.app)
+
+            await app_state.send_user_message("@claude hello")
+            await asyncio.sleep(0)
+            await pilot.pause()
+
+            assert _has_stop_footer_key(pilot.app)
+
+    async def test_footer_visible_when_waiting_for_user(self, multi_agent_state):
+        """WAITING_FOR_USER is also is_busy — footer should show stop binding."""
+        app_state, _ = multi_agent_state
+        claude = await app_state.add_agent("claude", AgentType.CLAUDE)
+
+        async with _FooterTestApp(app_state).run_test() as pilot:
+            await pilot.pause()
+            assert not _has_stop_footer_key(pilot.app)
+
+            # Simulate agent entering WAITING_FOR_USER (e.g. plan review)
+            claude.status = AgentStatus.WAITING_FOR_USER
+            pilot.app.refresh_bindings()
+            await pilot.pause()
+
+            assert _has_stop_footer_key(pilot.app)
+
+    async def test_footer_disappears_when_agent_finishes(self, multi_agent_state):
+        """Start with a busy agent, cancel it, verify footer updates."""
+        app_state, services = multi_agent_state
+        claude = await app_state.add_agent("claude", AgentType.CLAUDE)
+        services["claude"].enqueue_hang()
+
+        await app_state.send_user_message("@claude hello")
+        await asyncio.sleep(0)
+
+        async with _FooterTestApp(app_state).run_test() as pilot:
+            await pilot.pause()
+            assert _has_stop_footer_key(pilot.app)
+
+            app_state.cancel_agent(claude.id)
+            await app_state.router.drain()
+            await pilot.pause()
+
+            assert not _has_stop_footer_key(pilot.app)

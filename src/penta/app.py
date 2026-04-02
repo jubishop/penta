@@ -70,7 +70,13 @@ class PentaApp(App):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "continue_routing":
             return self._routing_stalled and self._all_agents_idle()
-        return True
+        if action == "stop_agents":
+            if not self._state:
+                return False
+            return any(
+                c.config.status.is_busy for c in self._state.coordinators.values()
+            )
+        return super().check_action(action, parameters)
 
     def _all_agents_idle(self) -> bool:
         if not self._state:
@@ -561,6 +567,7 @@ class PentaApp(App):
         indicator = self._status_indicators.get(agent_id)
         if indicator:
             indicator.status = status
+        self.refresh_bindings()
 
     def _render_new_messages(self) -> None:
         """Mount widgets for any conversation messages not yet rendered."""
