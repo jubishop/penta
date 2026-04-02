@@ -62,6 +62,9 @@ class AppState:
         self.on_conversation_switched: Callable[[], None] | None = None
         self.on_question_asked: Callable[[UUID, list[dict], str], None] | None = None
         self.on_plan_review: Callable[[UUID, str, str], None] | None = None
+        self.on_routing_stalled: Callable[[], None] | None = None
+
+        self.router.on_routing_stalled = self._relay_routing_stalled
 
     async def connect(self) -> None:
         await self.db.connect()
@@ -184,6 +187,23 @@ class AppState:
     @property
     def external_participants(self) -> set[str]:
         return self.router.external_participants
+
+    # -- Round limit / continue routing --
+
+    @property
+    def round_limit(self) -> int:
+        return self.router.round_limit
+
+    @round_limit.setter
+    def round_limit(self, value: int) -> None:
+        self.router.round_limit = value
+
+    @property
+    def is_routing_stalled(self) -> bool:
+        return self.router.is_stalled
+
+    def continue_routing(self) -> None:
+        self.router.continue_routing()
 
     # -- Delegated to router --
 
@@ -478,6 +498,10 @@ class AppState:
     def _relay_status_changed(self, agent_id: UUID, status: AgentStatus) -> None:
         if self.on_status_changed:
             self.on_status_changed(agent_id, status)
+
+    def _relay_routing_stalled(self) -> None:
+        if self.on_routing_stalled:
+            self.on_routing_stalled()
 
     def _on_hook_question(
         self, tool_use_id: str, questions: list[dict],

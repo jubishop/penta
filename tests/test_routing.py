@@ -16,7 +16,7 @@ from penta.models.agent_type import AgentType
 from penta.models.message import Message
 from penta.models.message_sender import MessageSender
 from penta.models.tagged_message import TaggedMessage
-from penta.routing import MessageRouter, RouteMode
+from penta.routing import DEFAULT_ROUND_LIMIT, MessageRouter, RouteMode
 from penta.services.db import PentaDB
 
 from .fakes import FakeAgentService
@@ -429,3 +429,153 @@ class TestRouterCancelCoalesceEndToEnd:
         rows = await memory_db.get_messages()
         assert len(rows) == 1
         assert rows[0][2] == "third answer"
+
+
+class TestRoundLimit:
+    def test_default_round_limit(self, router):
+        assert router.round_limit == DEFAULT_ROUND_LIMIT
+
+    def test_set_round_limit(self, router):
+        router.round_limit = 5
+        assert router.round_limit == 5
+
+    def test_round_limit_minimum_is_one(self, router):
+        router.round_limit = 0
+        assert router.round_limit == 1
+        router.round_limit = -5
+        assert router.round_limit == 1
+
+    async def test_custom_limit_is_enforced(self, router, agents, coordinators):
+        claude = _make_agent("claude", AgentType.CLAUDE)
+        coord = _register(agents, coordinators, claude)
+
+        router.round_limit = 2
+        tagged = TaggedMessage(sender_label="User", text="hello")
+
+        # hops=1 should still route (under limit of 2)
+        router.route(
+            tagged, excluding=None, mentioned={claude.id},
+            mode=RouteMode.MENTIONED_ONLY, hops=1,
+        )
+        coord.send.assert_called_once()
+
+        coord.reset_mock()
+
+        # hops=2 should be blocked (at limit)
+        router.route(
+            tagged, excluding=None, mentioned={claude.id},
+            mode=RouteMode.MENTIONED_ONLY, hops=2,
+        )
+        coord.send.assert_not_called()
+
+
+class TestStalledRouting:
+    async def test_stalled_when_limit_reached(self, router, agents, coordinators):
+        claude = _make_agent("claude", AgentType.CLAUDE)
+        _register(agents, coordinators, claude)
+
+        tagged = TaggedMessage(sender_label="User", text="hello")
+        router.route(
+            tagged, excluding=None, mentioned={claude.id},
+            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit,
+        )
+        assert router.is_stalled
+
+    async def test_not_stalled_under_limit(self, router, agents, coordinators):
+        claude = _make_agent("claude", AgentType.CLAUDE)
+        _register(agents, coordinators, claude)
+
+        tagged = TaggedMessage(sender_label="User", text="hello")
+        router.route(
+            tagged, excluding=None, mentioned={claude.id},
+            mode=RouteMode.MENTIONED_ONLY, hops=0,
+        )
+        assert not router.is_stalled
+
+    async def test_callback_fires_on_stall(self, router, agents, coordinators):
+        claude = _make_agent("claude", AgentType.CLAUDE)
+        _register(agents, coordinators, claude)
+
+        stalled_events: list[bool] = []
+        router.on_routing_stalled = lambda: stalled_events.append(True)
+
+        tagged = TaggedMessage(sender_label="User", text="hello")
+        router.route(
+            tagged, excluding=None, mentioned={claude.id},
+            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit,
+        )
+        assert stalled_events == [True]
+
+    async def test_continue_routing_resumes(self, router, agents, coordinators):
+        claude = _make_agent("claude", AgentType.CLAUDE)
+        coord = _register(agents, coordinators, claude)
+
+        tagged = TaggedMessage(sender_label="User", text="hello")
+        router.route(
+            tagged, excluding=None, mentioned={claude.id},
+            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit,
+        )
+        assert router.is_stalled
+        coord.send.assert_not_called()
+
+        # Continue should replay the stalled route at hops=0
+        router.continue_routing()
+        assert not router.is_stalled
+        coord.send.assert_called_once()
+
+    async def test_new_user_message_clears_stalled(
+        self, router, agents, coordinators,
+    ):
+        claude = _make_agent("claude", AgentType.CLAUDE)
+        _register(agents, coordinators, claude)
+
+        tagged = TaggedMessage(sender_label="User", text="hello")
+        router.route(
+            tagged, excluding=None, mentioned={claude.id},
+            mode=RouteMode.MENTIONED_ONLY, hops=router.round_limit,
+        )
+        assert router.is_stalled
+
+        await router.send_user_message("new message")
+        assert not router.is_stalled
+
+    async def test_continue_routing_allows_full_depth(
+        self, memory_db: PentaDB,
+    ):
+        """After continue_routing, agents get a fresh round_limit of cascades."""
+        claude = _make_agent("claude", AgentType.CLAUDE)
+        codex = _make_agent("codex", AgentType.CODEX)
+
+        claude_fake = FakeAgentService()
+        codex_fake = FakeAgentService()
+        # Claude responds mentioning codex
+        claude_fake.enqueue_text("@codex what do you think?")
+        # Codex responds
+        codex_fake.enqueue_text("I agree")
+
+        fakes = {claude.id: claude_fake, codex.id: codex_fake}
+        router, conversation, coordinators = _make_router_with_real_coordinators(
+            [claude, codex], fakes, memory_db,
+        )
+
+        # Set limit to 1 so the first cascade stalls
+        router.round_limit = 1
+
+        tagged = TaggedMessage(sender_label="User", text="@claude go")
+        router.route(
+            tagged, excluding=None, mentioned={claude.id},
+            mode=RouteMode.MENTIONED_ONLY,
+        )
+        await router.drain()
+
+        # Claude responded, its mention of @codex should have stalled
+        assert router.is_stalled
+
+        # Continue should deliver the stalled message to codex
+        router.continue_routing()
+        await router.drain()
+
+        assert not router.is_stalled
+        # Both agents should have been called
+        assert len(claude_fake.calls) == 1
+        assert len(codex_fake.calls) == 1

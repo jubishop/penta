@@ -9,6 +9,7 @@ from uuid import UUID
 from rich.markup import escape as rich_escape
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
+from textual.reactive import reactive
 from textual.widgets import Footer, Static
 
 from penta.models import AgentStatus, AgentType, Message, AgentConfig, MessageSender
@@ -20,6 +21,7 @@ from penta.widgets.conversation_list import ConversationAction, ConversationList
 from penta.widgets.input_bar import InputBar
 from penta.widgets.plan_picker import PlanPickerScreen
 from penta.widgets.question_picker import QuestionPickerScreen
+from penta.widgets.round_limit_screen import RoundLimitScreen
 from penta.widgets.status_indicator import ExternalIndicator, StatusIndicator
 
 log = logging.getLogger(__name__)
@@ -55,16 +57,42 @@ class PentaApp(App):
         ("ctrl+b", "scroll_to_new", "Jump to new"),
         ("ctrl+n", "new_conversation", "New chat"),
         ("ctrl+l", "list_conversations", "Chats"),
+        ("ctrl+r", "continue_routing", "Continue"),
+        ("ctrl+h", "set_round_limit", "Round limit"),
     ]
+
+    _routing_stalled = reactive(False, bindings=True)
 
     def action_quit(self) -> None:
         log.info("action_quit triggered")
         self.exit()
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "continue_routing":
+            return self._routing_stalled
+        return True
+
     def action_stop_agents(self) -> None:
         """Stop all currently streaming agents."""
         if self._state:
             self._state.cancel_all_busy()
+
+    def action_continue_routing(self) -> None:
+        """Resume agent-to-agent routing after a round limit stop."""
+        if self._state and self._state.is_routing_stalled:
+            self._state.continue_routing()
+            self._routing_stalled = False
+
+    def action_set_round_limit(self) -> None:
+        """Open a modal to configure the agent-to-agent round limit."""
+        if not self._state:
+            return
+        def on_result(value: int | None) -> None:
+            if value is not None and self._state:
+                self._state.round_limit = value
+        self.push_screen(
+            RoundLimitScreen(self._state.round_limit), callback=on_result,
+        )
 
     def on_status_indicator_stop_requested(
         self, event: StatusIndicator.StopRequested,
@@ -107,6 +135,7 @@ class PentaApp(App):
         state.on_conversation_switched = self._on_conversation_switched
         state.on_question_asked = self._on_question_asked
         state.on_plan_review = self._on_plan_review
+        state.on_routing_stalled = self._on_routing_stalled
         state.router.on_external_message = self._on_external_message
         state.router.on_external_participant_joined = self._on_external_participant_joined
 
@@ -172,6 +201,7 @@ class PentaApp(App):
     async def on_input_bar_submitted(self, event: InputBar.Submitted) -> None:
         if not self._state or self._switching:
             return
+        self._routing_stalled = False
         text = event.text.strip()
 
         # /approve [AgentName] — approve a pending plan
@@ -448,6 +478,9 @@ class PentaApp(App):
 
     def _on_status_changed(self, agent_id: UUID, status: AgentStatus) -> None:
         self._apply_status_change(agent_id, status)
+
+    def _on_routing_stalled(self) -> None:
+        self._routing_stalled = True
 
     def _on_external_message(self, sender: str, text: str) -> None:
         self._render_new_messages()
