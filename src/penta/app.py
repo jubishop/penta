@@ -426,12 +426,16 @@ class PentaApp(App):
             if coord:
                 coord.set_status(AgentStatus.PROCESSING)
 
-        self.call_later(
-            lambda: self.push_screen(
+        def _show_question() -> None:
+            ps = self._state._permission_server if self._state else None
+            if not ps or tool_use_id not in ps._pending:
+                return
+            self.push_screen(
                 QuestionPickerScreen(agent_name, questions),
                 callback=on_answers,
-            ),
-        )
+            )
+
+        self.call_later(_show_question)
 
     def _on_plan_review(
         self, agent_id: UUID, plan_text: str, tool_use_id: str,
@@ -456,6 +460,8 @@ class PentaApp(App):
         )
 
         def _show() -> None:
+            if not self._state or agent_id not in self._state.pending_plans:
+                return
             self._render_new_messages()
             self.notify(
                 f"Plan from {agent_name} — /approve, /revise <feedback>, "
