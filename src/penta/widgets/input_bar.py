@@ -1,29 +1,75 @@
 from __future__ import annotations
 
+import re
+
 from textual.app import ComposeResult
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
-from textual.widgets import Button, TextArea
+from textual.reactive import reactive
+from textual.widgets import Button, Static, TextArea
+
+from penta.models import AgentConfig
 
 
-class InputBar(Horizontal):
-    """Chat input bar. Ctrl+Enter sends, Enter for newlines."""
+class AgentToggle(Static):
+    """Pill-shaped toggle button for an agent."""
+
+    active: reactive[bool] = reactive(False)
+
+    def __init__(self, agent: AgentConfig) -> None:
+        super().__init__(f"@{agent.name}")
+        self._agent = agent
+
+    @property
+    def agent_name(self) -> str:
+        return self._agent.name
+
+    def on_click(self) -> None:
+        self.active = not self.active
+
+    def watch_active(self, value: bool) -> None:
+        self.set_class(value, "active")
+        if value:
+            self.styles.background = self._agent.type.color
+        else:
+            self.styles.background = "transparent"
+
+
+class InputBar(Vertical):
+    """Chat input bar with agent toggle pills. Ctrl+Enter sends, Enter for newlines."""
 
     DEFAULT_CSS = """
     InputBar {
         height: auto;
-        max-height: 7;
+        max-height: 10;
         dock: bottom;
         padding: 1;
         background: $surface;
     }
-    InputBar TextArea {
+    InputBar #agent-toggles {
+        height: auto;
+    }
+    InputBar AgentToggle {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        margin: 0 1 0 0;
+        color: gray;
+    }
+    InputBar AgentToggle.active {
+        color: black;
+        text-style: bold;
+    }
+    InputBar #input-row {
+        height: auto;
+    }
+    InputBar #input-row TextArea {
         width: 1fr;
         min-height: 1;
         max-height: 5;
         border: round $accent;
     }
-    InputBar Button {
+    InputBar #input-row Button {
         width: 8;
         margin-left: 1;
     }
@@ -37,13 +83,23 @@ class InputBar(Horizontal):
             super().__init__()
 
     def compose(self) -> ComposeResult:
-        yield TextArea(id="input-text")
-        yield Button("Send", variant="primary", id="send-btn")
+        with Horizontal(id="input-row"):
+            yield TextArea(id="input-text")
+            yield Button("Send", variant="primary", id="send-btn")
 
     def on_mount(self) -> None:
         ta = self.query_one("#input-text", TextArea)
         ta.show_line_numbers = False
         ta.focus()
+
+    def set_agents(self, agents: list[AgentConfig]) -> None:
+        """Populate agent toggle pills above the input."""
+        toggles = [AgentToggle(agent) for agent in agents]
+        container = Horizontal(*toggles, id="agent-toggles")
+        self.mount(container, before="#input-row")
+
+    def _active_toggles(self) -> list[AgentToggle]:
+        return [t for t in self.query(AgentToggle) if t.active]
 
     def action_submit(self) -> None:
         self._submit()
@@ -57,6 +113,21 @@ class InputBar(Horizontal):
         text = ta.text.strip()
         if not text:
             return
+
+        # Auto-prepend active agent mentions if not already present
+        active = self._active_toggles()
+        if active:
+            text_lower = text.lower()
+            stripped = re.sub(r"```[\s\S]*?```", "", text_lower)
+            stripped = re.sub(r"`[^`]+`", "", stripped)
+            prefixes = []
+            for toggle in active:
+                pattern = rf"(?<!\w)@{re.escape(toggle.agent_name.lower())}\b"
+                if not re.search(pattern, stripped):
+                    prefixes.append(f"@{toggle.agent_name}")
+            if prefixes:
+                text = " ".join(prefixes) + " " + text
+
         ta.clear()
         self.post_message(self.Submitted(text))
         ta.focus()

@@ -121,6 +121,9 @@ class PentaApp(App):
             self._status_indicators[agent.id] = indicator
             status_bar.mount(indicator)
 
+        # Add agent toggle pills to input bar
+        self.query_one(InputBar).set_agents(state.agents)
+
         # Load history
         await state.load_chat_history()
         chat_room = self.query_one("#chat-room", ChatRoom)
