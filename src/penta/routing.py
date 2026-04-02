@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Callable
 from uuid import UUID
@@ -18,14 +19,22 @@ from penta.utils import log_task_error
 
 log = logging.getLogger(__name__)
 
+DEFAULT_ROUND_LIMIT = 3
+
 
 class RouteMode(Enum):
     ALL_IF_NO_MENTIONS = auto()
     MENTIONED_ONLY = auto()
 
 
+@dataclass(frozen=True)
+class _StalledRoute:
+    tagged: TaggedMessage
+    excluding: UUID | None
+    mentioned: set[UUID]
+
+
 class MessageRouter:
-    _MAX_ROUTING_HOPS = 3
 
     def __init__(
         self,
@@ -40,16 +49,43 @@ class MessageRouter:
         self._coordinators = coordinators
         self._conversation = conversation
         self._db = db
+        self._round_limit = DEFAULT_ROUND_LIMIT
+        self._stalled: list[_StalledRoute] = []
         self.external_participants: set[str] = set()
         self._pending_tasks: set[asyncio.Task] = set()
 
         # Callbacks for the TUI layer
         self.on_external_message: Callable[[str, str], None] | None = None
         self.on_external_participant_joined: Callable[[str], None] | None = None
+        self.on_routing_stalled: Callable[[], None] | None = None
+
+    @property
+    def round_limit(self) -> int:
+        return self._round_limit
+
+    @round_limit.setter
+    def round_limit(self, value: int) -> None:
+        self._round_limit = max(1, value)
+
+    @property
+    def is_stalled(self) -> bool:
+        return bool(self._stalled)
+
+    def continue_routing(self) -> None:
+        """Resume routing from the point where the round limit stopped it."""
+        stalled = list(self._stalled)
+        self._stalled.clear()
+        for sr in stalled:
+            self.route(
+                sr.tagged, excluding=sr.excluding,
+                mentioned=sr.mentioned,
+                mode=RouteMode.MENTIONED_ONLY,
+            )
 
     async def send_user_message(
         self, text: str, routed_text: str | None = None,
     ) -> None:
+        self._stalled.clear()
         self._conversation.append(Message(sender=MessageSender.user(), text=text))
         await self._db.append_message("User", text)
         delivered = routed_text if routed_text is not None else text
@@ -93,9 +129,6 @@ class MessageRouter:
         hops: int = 0,
     ) -> None:
         asyncio.get_running_loop()  # fail fast if called outside an event loop
-        if hops >= self._MAX_ROUTING_HOPS:
-            log.warning("Routing depth limit reached (%d hops), stopping propagation", hops)
-            return
 
         if mode == RouteMode.ALL_IF_NO_MENTIONS and not mentioned:
             responding = {
@@ -104,6 +137,13 @@ class MessageRouter:
             }
         else:
             responding = mentioned
+
+        if hops >= self._round_limit and responding:
+            log.warning("Routing depth limit reached (%d hops), stopping propagation", hops)
+            self._stalled.append(_StalledRoute(tagged, excluding, mentioned))
+            if self.on_routing_stalled:
+                self.on_routing_stalled()
+            return
 
         for agent in self._agents:
             if agent.id == excluding:
