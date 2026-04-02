@@ -7,6 +7,10 @@ call_later.  These tests verify:
   1. The original bug: widgets compose correctly when deferred (NoActiveAppError).
   2. Staleness guards: deferred callbacks are skipped when the pending
      tool_use_id / plan is resolved before call_later fires.
+
+Note: We can't subclass PentaApp because Textual dispatches on_mount to
+every class in the MRO that defines it (not just the first).  Instead we
+import and bind the methods under test onto a plain App.
 """
 
 from __future__ import annotations
@@ -16,8 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from textual.app import App, ComposeResult
+from textual.widgets import Static
+
 from penta.app import PentaApp
-from penta.models import AgentStatus, AgentType, PendingPlan
+from penta.models import AgentType, PendingPlan
 from penta.widgets.question_picker import QuestionPickerScreen
 
 
@@ -25,8 +32,6 @@ from penta.widgets.question_picker import QuestionPickerScreen
 
 
 class _StubPermissionServer:
-    """Minimal stand-in for PermissionServer with a _pending dict."""
-
     def __init__(self) -> None:
         self._pending: dict[str, asyncio.Future] = {}
 
@@ -44,8 +49,6 @@ class _StubAgent:
 
 
 class _StubState:
-    """Minimal stand-in for AppState — just enough for the hook callbacks."""
-
     def __init__(self) -> None:
         self._permission_server = _StubPermissionServer()
         self.pending_plans: dict[UUID, PendingPlan] = {}
@@ -64,26 +67,27 @@ class _StubState:
     def cancel_agent(self, agent_id: UUID) -> None:
         pass
 
-    async def shutdown(self) -> None:
-        pass
+
+# -- Test app ----------------------------------------------------------------
 
 
-class _SkeletonPentaApp(PentaApp):
-    """PentaApp that skips heavy on_mount and avoids widget-mounting in tests.
+class _HookTestApp(App):
+    """Minimal app with PentaApp's hook methods bound directly.
 
-    _render_new_messages is stubbed out because the real implementation
-    mounts ChatMessage widgets that require full app initialisation.
-    We track calls to it so plan-guard tests can verify it was/wasn't called.
+    Avoids subclassing PentaApp (Textual walks the full MRO for on_mount).
     """
 
-    CSS_PATH = None  # type: ignore[assignment]
-
-    def __init__(self, directory: Path, **kwargs) -> None:
-        super().__init__(directory, **kwargs)
+    def __init__(self) -> None:
+        super().__init__()
+        self._state: _StubState | None = None
         self.render_calls: int = 0
 
-    async def on_mount(self) -> None:
-        pass
+    def compose(self) -> ComposeResult:
+        yield Static("test")
+
+    # Bind the actual production methods from PentaApp
+    _on_question_asked = PentaApp._on_question_asked  # type: ignore[assignment]
+    _on_plan_review = PentaApp._on_plan_review  # type: ignore[assignment]
 
     def _render_new_messages(self) -> None:
         self.render_calls += 1
@@ -105,7 +109,7 @@ def _questions() -> list[dict]:
     ]
 
 
-def _has_question_screen(app: PentaApp) -> bool:
+def _has_question_screen(app: App) -> bool:
     return any(isinstance(s, QuestionPickerScreen) for s in app.screen_stack)
 
 
@@ -114,17 +118,16 @@ def _has_question_screen(app: PentaApp) -> bool:
 
 async def test_question_screen_shown_when_still_pending():
     """QuestionPickerScreen is pushed when tool_use_id is still in _pending."""
-    app = _SkeletonPentaApp(Path("/tmp/test"))
+    app = _HookTestApp()
 
     async with app.run_test() as pilot:
         state = _StubState()
         agent_id = uuid4()
         state.add_agent(agent_id, "Claude")
-        tid = "tu_pending"
-        state._permission_server._pending[tid] = asyncio.get_running_loop().create_future()
-        app._state = state  # type: ignore[assignment]
+        state._permission_server._pending["tu_1"] = asyncio.get_running_loop().create_future()
+        app._state = state
 
-        app._on_question_asked(agent_id, _questions(), tid)
+        app._on_question_asked(agent_id, _questions(), "tu_1")
         await pilot.pause()
 
         assert _has_question_screen(app)
@@ -132,15 +135,14 @@ async def test_question_screen_shown_when_still_pending():
 
 async def test_question_screen_skipped_when_stale():
     """QuestionPickerScreen is NOT pushed when tool_use_id is already resolved."""
-    app = _SkeletonPentaApp(Path("/tmp/test"))
+    app = _HookTestApp()
 
     async with app.run_test() as pilot:
         state = _StubState()
-        agent_id = uuid4()
-        state.add_agent(agent_id, "Claude")
-        app._state = state  # type: ignore[assignment]
+        state.add_agent(uuid4(), "Claude")
+        app._state = state
 
-        app._on_question_asked(agent_id, _questions(), "stale_id")
+        app._on_question_asked(uuid4(), _questions(), "stale_id")
         await pilot.pause()
 
         assert not _has_question_screen(app)
@@ -148,7 +150,7 @@ async def test_question_screen_skipped_when_stale():
 
 async def test_question_screen_skipped_when_state_cleared():
     """Guard handles _state being None (app shutting down)."""
-    app = _SkeletonPentaApp(Path("/tmp/test"))
+    app = _HookTestApp()
 
     async with app.run_test() as pilot:
         app._on_question_asked(uuid4(), _questions(), "tu_x")
@@ -162,7 +164,7 @@ async def test_question_screen_skipped_when_state_cleared():
 
 async def test_plan_render_called_when_still_pending():
     """_render_new_messages + notify fire when agent_id is still pending."""
-    app = _SkeletonPentaApp(Path("/tmp/test"))
+    app = _HookTestApp()
 
     async with app.run_test() as pilot:
         state = _StubState()
@@ -172,7 +174,7 @@ async def test_plan_render_called_when_still_pending():
             agent_id=agent_id, agent_name="Claude",
             tool_use_id="tu_plan", plan_text="do stuff",
         )
-        app._state = state  # type: ignore[assignment]
+        app._state = state
 
         app._on_plan_review(agent_id, "do stuff", "tu_plan")
         await pilot.pause()
@@ -183,16 +185,15 @@ async def test_plan_render_called_when_still_pending():
 
 
 async def test_plan_render_skipped_when_stale():
-    """_render_new_messages + notify are suppressed when plan is no longer pending."""
-    app = _SkeletonPentaApp(Path("/tmp/test"))
+    """_render_new_messages + notify are suppressed when plan is gone."""
+    app = _HookTestApp()
 
     async with app.run_test() as pilot:
         state = _StubState()
-        agent_id = uuid4()
-        state.add_agent(agent_id, "Claude")
-        app._state = state  # type: ignore[assignment]
+        state.add_agent(uuid4(), "Claude")
+        app._state = state
 
-        app._on_plan_review(agent_id, "old plan", "tu_old")
+        app._on_plan_review(uuid4(), "old plan", "tu_old")
         await pilot.pause()
 
         assert len(state.conversation) == 1
