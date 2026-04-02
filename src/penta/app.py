@@ -18,6 +18,7 @@ from penta.widgets.chat_message import ChatMessage
 from penta.widgets.chat_room import ChatRoom, NewContentIndicator
 from penta.widgets.conversation_list import ConversationAction, ConversationListResult, ConversationListScreen
 from penta.widgets.input_bar import InputBar
+from penta.widgets.agent_action import AgentAction, AgentActionScreen
 from penta.widgets.plan_picker import PlanPickerScreen
 from penta.widgets.question_picker import QuestionPickerScreen
 from penta.widgets.status_indicator import ExternalIndicator, StatusIndicator
@@ -69,9 +70,31 @@ class PentaApp(App):
     def on_status_indicator_stop_requested(
         self, event: StatusIndicator.StopRequested,
     ) -> None:
-        """Handle click-to-stop on a processing StatusIndicator."""
-        if self._state:
-            self._state.cancel_agent(event.agent_id)
+        """Handle click on a busy StatusIndicator.
+
+        If the agent has a pending plan, show an action menu (approve/revise/stop).
+        Otherwise, stop the agent immediately.
+        """
+        if not self._state:
+            return
+        agent_id = event.agent_id
+        if agent_id in self._state.pending_plans:
+            agent = self._state.agent_by_id(agent_id)
+            agent_name = agent.name if agent else "Agent"
+
+            def on_action(action: AgentAction | None) -> None:
+                if action is None or not self._state:
+                    return
+                if action is AgentAction.APPROVE:
+                    self._handle_approve(f"/approve {agent_name}")
+                elif action is AgentAction.REVISE:
+                    self.query_one(InputBar).prefill(f"/revise {agent_name} ")
+                elif action is AgentAction.STOP:
+                    self._state.cancel_agent(agent_id)
+
+            self.push_screen(AgentActionScreen(agent_name), callback=on_action)
+        else:
+            self._state.cancel_agent(agent_id)
 
     def _handle_exception(self, error: Exception) -> None:
         log.exception("Unhandled exception — app will exit: %s", error)
@@ -174,8 +197,13 @@ class PentaApp(App):
             return
         text = event.text.strip()
 
-        # /approve [AgentName] — approve a pending plan
+        # /stop [AgentName] — stop busy agents
         lower = text.lower()
+        if lower == "/stop" or lower.startswith("/stop "):
+            self._handle_stop(text)
+            return
+
+        # /approve [AgentName] — approve a pending plan
         if lower == "/approve" or lower.startswith("/approve "):
             self._handle_approve(text)
             return
@@ -307,6 +335,25 @@ class PentaApp(App):
         )
 
     # -- Plan / Question handling --
+
+    def _handle_stop(self, text: str) -> None:
+        """Handle /stop [AgentName]."""
+        state = self._state
+        assert state is not None
+        parts = text.split(maxsplit=1)
+        agent_name = parts[1].strip() if len(parts) > 1 else None
+
+        if agent_name:
+            agent = state.agent_by_name(agent_name)
+            if agent is None:
+                self.notify(f"Unknown agent '{agent_name}'", severity="warning")
+                return
+            if not state.cancel_agent(agent.id):
+                self.notify(f"{agent.name} is not busy", severity="warning")
+        else:
+            count = state.cancel_all_busy()
+            if count == 0:
+                self.notify("No agents are busy", severity="warning")
 
     def _handle_approve(self, text: str) -> None:
         """Handle /approve [AgentName]."""

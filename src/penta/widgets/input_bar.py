@@ -52,6 +52,13 @@ class InputBar(Horizontal):
         if event.button.id == "send-btn":
             self._submit()
 
+    def prefill(self, text: str) -> None:
+        """Pre-fill the input bar with text and move cursor to end."""
+        ta = self.query_one("#input-text", TextArea)
+        ta.load_text(text)
+        ta.action_cursor_line_end()
+        ta.focus()
+
     def _submit(self) -> None:
         ta = self.query_one("#input-text", TextArea)
         text = ta.text.strip()
