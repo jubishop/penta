@@ -68,7 +68,7 @@ class PentaApp(App):
             return any(
                 c.config.status.is_busy for c in self._state.coordinators.values()
             )
-        return True
+        return super().check_action(action, parameters)
 
     def action_stop_agents(self) -> None:
         """Stop all currently streaming agents."""
