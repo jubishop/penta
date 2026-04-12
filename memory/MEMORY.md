@@ -1,0 +1,3 @@
+- [Test penta worktree changes](feedback_testing_worktree.md) — use `.venv/bin/penta` in worktrees, keep global `penta` on main via pipx
+- [Bidirectional streaming blocked by CLI bug](project_bidirectional_streaming.md) — branch `worktree-usingPlans` has full AskUserQuestion/ExitPlanMode support, blocked by claude-code#34046
+- [Git hooks must be silent](feedback_silent_hooks.md) — no stdout/stderr from hooks, it breaks Claude Code sessions
