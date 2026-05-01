@@ -1,8 +1,10 @@
+import AppKit
 import PentaCore
 import SwiftUI
 
 @main
 struct PentaMacApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = PentaViewModel()
 
     var body: some Scene {
@@ -21,6 +23,14 @@ struct PentaMacApp: App {
                 .keyboardShortcut("n", modifiers: [.command])
             }
         }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        print("PentaMac launched. The terminal stays attached until you quit the app.")
     }
 }
 

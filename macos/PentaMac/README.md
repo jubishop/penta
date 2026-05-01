@@ -16,6 +16,7 @@ swift run PentaMac /path/to/project
 ```
 
 If no directory is provided, PentaMac scopes the chat to the current working directory.
+`swift run` launches a GUI process, so the terminal remains attached until you quit the app.
 
 The app discovers `claude` and `codex` on `PATH`, with the same overrides as the Python app:
 
