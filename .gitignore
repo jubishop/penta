@@ -12,3 +12,4 @@ build/
 *.db-shm
 .venv/
 worktrees/
+.build/
